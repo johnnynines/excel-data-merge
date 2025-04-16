@@ -4,6 +4,7 @@ import tempfile
 import pandas as pd
 from zipfile import ZipFile
 import file_processor
+import platform
 
 # Set page configuration
 st.set_page_config(
@@ -11,6 +12,9 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
+
+# Check if running on MacOS
+is_macos = platform.system() == "Darwin"
 
 # Initialize session state variables if they don't exist
 if 'file_data' not in st.session_state:
@@ -29,6 +33,8 @@ if 'zip_file_path' not in st.session_state:
     st.session_state.zip_file_path = None
 if 'error_message' not in st.session_state:
     st.session_state.error_message = None
+if 'debug_mode' not in st.session_state:
+    st.session_state.debug_mode = False
 
 def reset_app():
     # Clean up temporary files if they exist
@@ -54,6 +60,19 @@ def reset_app():
 st.title("Excel Data Extractor")
 st.write("Upload a zip file containing Excel files, select data columns to extract, and merge them into a new Excel file.")
 
+# Add MacOS-specific information
+if is_macos:
+    st.success("Running on MacOS - optimized for your system")
+else:
+    st.warning("This application is optimized for MacOS. Some features may not work correctly on other operating systems.")
+
+# Add a debug mode toggle
+with st.expander("Debug Options"):
+    debug_enabled = st.checkbox("Enable Debug Mode", value=st.session_state.debug_mode)
+    if debug_enabled != st.session_state.debug_mode:
+        st.session_state.debug_mode = debug_enabled
+        st.rerun()
+
 # Show error message if any
 if st.session_state.error_message:
     st.error(st.session_state.error_message)
@@ -62,6 +81,15 @@ if st.session_state.error_message:
 # Upload and extract zip file stage
 if st.session_state.processing_stage == "upload":
     st.header("Step 1: Upload Zip File")
+    
+    # Guidance for MacOS users
+    st.info("""
+    **MacOS Tips:**
+    1. Create a ZIP file by selecting multiple Excel files, right-clicking, and choosing "Compress"
+    2. Make sure your Excel files are .xlsx format (Office Open XML)
+    3. Avoid using special characters in filenames
+    """)
+    
     uploaded_file = st.file_uploader("Choose a ZIP file containing Excel (.xlsx) files", type=["zip"])
     
     if uploaded_file is not None:
@@ -77,18 +105,51 @@ if st.session_state.processing_stage == "upload":
             
             st.session_state.zip_file_path = zip_path
             
+            # Show additional debug info if debug mode is enabled
+            if st.session_state.debug_mode:
+                st.write(f"ZIP file saved to: {zip_path}")
+                st.write(f"Temporary directory: {temp_dir}")
+            
             # Extract Excel files from the ZIP
             with st.spinner("Extracting ZIP file..."):
                 extracted_files = file_processor.extract_zip_file(zip_path, temp_dir)
                 
                 if not extracted_files:
                     st.warning("No Excel files found in the ZIP archive.")
+                    
+                    # Show helpful troubleshooting info
+                    with st.expander("Troubleshooting Tips"):
+                        st.markdown("""
+                        **Why might Excel files not be detected?**
+                        - The ZIP file might not contain Excel files with .xlsx extension
+                        - Excel files might be in subdirectories (we'll search for them)
+                        - Files might be corrupted or password-protected
+                        
+                        **Try the following:**
+                        - Enable Debug Mode (in the Debug Options expander above)
+                        - Check that your Excel files have .xlsx extension
+                        - Re-create the ZIP file on MacOS using Finder's "Compress" option
+                        """)
                 else:
                     # Read Excel files and store their data
                     st.session_state.file_data = file_processor.read_excel_files(extracted_files)
                     
                     if not st.session_state.file_data:
                         st.warning("Could not read any data from the Excel files.")
+                        
+                        # Show helpful troubleshooting info
+                        with st.expander("Troubleshooting Tips"):
+                            st.markdown("""
+                            **Why might data not be readable?**
+                            - Excel files might be empty
+                            - Files might be corrupted or password-protected
+                            - Files might have unusual formatting
+                            
+                            **Try the following:**
+                            - Enable Debug Mode (in the Debug Options expander above)
+                            - Check that your Excel files can be opened normally in Excel
+                            - Save files in a simple Excel format without advanced features
+                            """)
                     else:
                         # Initialize the selected_columns dictionary with the same structure as file_data
                         st.session_state.selected_columns = {}
@@ -103,6 +164,12 @@ if st.session_state.processing_stage == "upload":
         
         except Exception as e:
             st.session_state.error_message = f"Error processing ZIP file: {str(e)}"
+            
+            # Show more detailed error in debug mode
+            if st.session_state.debug_mode:
+                import traceback
+                st.error(f"Error details:\n{traceback.format_exc()}")
+            
             st.rerun()
 
 # Data selection stage
