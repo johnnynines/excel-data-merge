@@ -162,6 +162,7 @@ class FileProcessorThread(QThread):
     def extract_zip_file(self):
         """Extract Excel files from a ZIP archive"""
         excel_files = []
+        found_files = set()  # Use a set to track unique files by name
         
         try:
             self.progress_signal.emit("Opening ZIP file...")
@@ -172,6 +173,10 @@ class FileProcessorThread(QThread):
                 
                 self.progress_signal.emit(f"Found {len(file_list)} files in ZIP archive")
                 
+                # Debug: Print all files in the ZIP for inspection
+                all_files_str = ", ".join([f for f in file_list if not f.endswith('/')])
+                self.progress_signal.emit(f"Files in ZIP: {all_files_str}")
+                
                 # Extract only Excel files
                 for file_name in file_list:
                     lower_name = file_name.lower()
@@ -179,33 +184,76 @@ class FileProcessorThread(QThread):
                         # Handle folder paths in ZIP
                         if file_name.endswith('/') or os.path.basename(file_name) == '':
                             continue
-                            
+                        
                         # Extract the file
                         try:
-                            self.progress_signal.emit(f"Extracting: {file_name}")
+                            # Log the exact file name for debugging
+                            base_name = os.path.basename(file_name)
+                            self.progress_signal.emit(f"Extracting Excel file: {base_name} (full path: {file_name})")
+                            
+                            # Extract the file
                             zip_ref.extract(file_name, self.extract_dir)
                             full_path = os.path.join(self.extract_dir, file_name)
-                            excel_files.append(full_path)
+                            
+                            # Make sure we don't add duplicates
+                            if full_path not in excel_files:
+                                excel_files.append(full_path)
+                                found_files.add(base_name)
+                                self.progress_signal.emit(f"Added to processing list: {base_name}")
                         except Exception as extract_error:
                             self.progress_signal.emit(f"Could not extract {file_name}: {str(extract_error)}")
                     
-                # Also look for Excel files in extracted folders
+                # Also look for Excel files in extracted folders that might have been missed
+                skipped_files = []
                 for root, dirs, files in os.walk(self.extract_dir):
                     for file in files:
-                        if file.lower().endswith(('.xlsx', '.xls')) and os.path.join(root, file) not in excel_files:
-                            excel_files.append(os.path.join(root, file))
-                            self.progress_signal.emit(f"Found additional Excel file: {file}")
+                        if file.lower().endswith(('.xlsx', '.xls')):
+                            full_path = os.path.join(root, file)
+                            if full_path not in excel_files:
+                                excel_files.append(full_path)
+                                if file not in found_files:
+                                    found_files.add(file)
+                                    self.progress_signal.emit(f"Found additional Excel file: {file}")
+                                else:
+                                    # File was found but under a different path
+                                    self.progress_signal.emit(f"NOTE: Found duplicate Excel file with different path: {file}")
+                            else:
+                                skipped_files.append(file)
+                
+                if skipped_files:
+                    self.progress_signal.emit(f"Skipped duplicates: {', '.join(skipped_files)}")
+                
+                # Debug - list all extracted files
+                self.progress_signal.emit(f"All extracted Excel files: {', '.join(found_files)}")
         
         except Exception as e:
             self.error_signal.emit(f"Error extracting ZIP file: {str(e)}")
             return []
         
-        self.progress_signal.emit(f"Extracted {len(excel_files)} Excel files")
-        return excel_files
+        # Make sure all Excel files are unique by path
+        unique_files = []
+        seen_paths = set()
+        for file_path in excel_files:
+            if file_path not in seen_paths:
+                unique_files.append(file_path)
+                seen_paths.add(file_path)
+        
+        self.progress_signal.emit(f"Found {len(unique_files)} unique Excel files. Processing now...")
+        
+        # Sort files alphabetically to ensure consistent processing order
+        unique_files.sort()
+        
+        # Final verification
+        self.progress_signal.emit(f"Files to be processed:")
+        for i, file_path in enumerate(unique_files):
+            self.progress_signal.emit(f"{i+1}. {os.path.basename(file_path)}")
+            
+        return unique_files
     
     def read_excel_files(self, file_paths):
         """Read data from multiple Excel files"""
-        file_data = {}
+        file_data = {}  # This will store our processed Excel data
+        processed_files = set()  # Keep track of processed files to detect issues
         
         if not file_paths:
             self.progress_signal.emit("No Excel files to process")
@@ -213,25 +261,46 @@ class FileProcessorThread(QThread):
         
         self.progress_signal.emit(f"Reading {len(file_paths)} Excel files...")
         
-        for file_path in file_paths:
+        # For debugging - explicitly list all files we'll process
+        for idx, file_path in enumerate(file_paths):
+            self.progress_signal.emit(f"Will process #{idx+1}: {os.path.basename(file_path)}")
+        
+        # Track the original file names to make sure we don't lose any
+        original_filenames = [os.path.basename(path) for path in file_paths]
+        self.progress_signal.emit(f"Original filenames to process: {', '.join(original_filenames)}")
+        
+        # Process each file in the list
+        for file_idx, file_path in enumerate(file_paths):
             try:
                 # Get just the filename without path
                 raw_file_name = os.path.basename(file_path)
                 
-                # Ensure filenames are sanitized and don't have problematic characters
-                # This should create more predictable keys for dictionaries and UI elements
-                file_name = raw_file_name.replace(' ', '_').replace('-', '_')
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    self.progress_signal.emit(f"ERROR: File does not exist: {file_path}")
+                    continue
+                
+                # Better file name sanitization
+                file_name = raw_file_name
+                # Replace problematic characters with underscore
+                for char in [' ', '-', '(', ')', '[', ']', '{', '}', '&', '+', '=']:
+                    file_name = file_name.replace(char, '_')
                 
                 # Log both original and sanitized filenames
-                self.progress_signal.emit(f"Reading file: {raw_file_name}")
+                self.progress_signal.emit(f"Processing file {file_idx+1}/{len(file_paths)}: {raw_file_name}")
                 if raw_file_name != file_name:
                     self.progress_signal.emit(f"Using sanitized file name: {file_name} for internal processing")
                 
+                # Track this file as processed
+                processed_files.add(raw_file_name)
+                
                 # Read all sheets from the Excel file
                 try:
+                    # Try pandas ExcelFile first
+                    self.progress_signal.emit(f"Attempting to read: {file_path}")
                     excel_file = pd.ExcelFile(file_path)
                     sheet_names = excel_file.sheet_names
-                    self.progress_signal.emit(f"Found {len(sheet_names)} sheets in {file_name}")
+                    self.progress_signal.emit(f"Found {len(sheet_names)} sheets in {file_name}: {', '.join(sheet_names)}")
                 except Exception as excel_error:
                     self.progress_signal.emit(f"Error opening Excel file '{file_name}': {str(excel_error)}")
                     
@@ -239,17 +308,19 @@ class FileProcessorThread(QThread):
                     try:
                         # For xls files
                         if file_path.lower().endswith('.xls'):
+                            self.progress_signal.emit(f"Trying alternate read method with xlrd engine")
                             df = pd.read_excel(file_path, engine='xlrd')
                             file_data[file_name] = {"Sheet1": df}
                             self.progress_signal.emit(f"Successfully read {file_name} using xlrd engine")
                             continue
                     except Exception as alt_error:
                         self.progress_signal.emit(f"Alternative read approach failed: {str(alt_error)}")
+                    self.progress_signal.emit(f"SKIPPING file {file_name} due to errors")
                     continue
                 
                 # Print debugging info about file data before adding
                 existing_files = list(file_data.keys())
-                self.progress_signal.emit(f"Current files in data: {existing_files}")
+                self.progress_signal.emit(f"Current files in data dictionary: {existing_files}")
                 
                 # Initialize the entry for this file, ensuring we don't overwrite existing data
                 if file_name in file_data:
@@ -259,8 +330,9 @@ class FileProcessorThread(QThread):
                     while file_name in file_data:
                         file_name = f"{base_name}_{counter}"
                         counter += 1
-                    self.progress_signal.emit(f"Using modified file name: {file_name}")
+                    self.progress_signal.emit(f"Using unique file name: {file_name}")
                 
+                # Create the dictionary entry for this file
                 file_data[file_name] = {}
                 
                 # Read each sheet and store its data
@@ -623,11 +695,35 @@ class ExcelExtractorApp(QMainWindow):
         
         # Debug: Print the file data structure to understand the hierarchy
         print("\n---- DEBUG: File Data Structure ----")
+        file_count = len(file_data)
+        print(f"Total files to display: {file_count}")
+        
+        if file_count == 0:
+            print("WARNING: No files in file_data dictionary!")
+        
+        # Count total sheets for statistics
+        total_sheet_count = 0
+        
         for file_name, sheets in file_data.items():
+            sheet_count = len(sheets)
+            total_sheet_count += sheet_count
             print(f"File: {file_name}")
             sheet_names = list(sheets.keys())
-            print(f"  Sheets: {', '.join(sheet_names)}")
+            print(f"  Sheets ({sheet_count}): {', '.join(sheet_names)}")
+        
+        print(f"Total sheets to display: {total_sheet_count}")
         print("-----------------------------------\n")
+        
+        # Verify we have all the files from the processing step
+        expected_file_count = len(self.file_data)
+        if file_count != expected_file_count:
+            print(f"WARNING: Expected {expected_file_count} files but found {file_count}")
+            print(f"Expected: {list(self.file_data.keys())}")
+            print(f"Actual: {list(file_data.keys())}")
+        
+        # Keep a list of files and sheets to verify completeness
+        added_files = []
+        added_sheets = []
         
         # Add each file and its sheets to the tree
         for file_idx, (file_name, sheets) in enumerate(file_data.items()):
@@ -639,24 +735,30 @@ class ExcelExtractorApp(QMainWindow):
             
             # Store in dictionary with unique key (file name)
             self.tree_items[file_name] = file_item
+            added_files.append(file_name)
             
-            print(f"Added file to tree: {file_name}")
+            print(f"Added file {file_idx+1}/{file_count} to tree: {file_name}")
             
             # Add sheets as child items
+            sheet_count = len(sheets)
+            added_sheet_count = 0
+            
             for sheet_idx, (sheet_name, df) in enumerate(sheets.items()):
                 sheet_item = QTreeWidgetItem(file_item)
                 sheet_item.setText(0, sheet_name)
                 sheet_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
                 
-                # Store references to navigate to this sheet
+                # Store references to navigate to this sheet - these are critical!
                 sheet_item.file_name = file_name
                 sheet_item.sheet_name = sheet_name
                 
                 # Create a unique key for this sheet
                 sheet_key = f"{file_name}_{sheet_name}"
                 self.tree_items[sheet_key] = sheet_item
+                added_sheets.append(sheet_key)
+                added_sheet_count += 1
                 
-                print(f"  Added sheet to tree: {sheet_name} with key {sheet_key}")
+                print(f"  Added sheet {sheet_idx+1}/{sheet_count} to tree: {sheet_name} with key {sheet_key}")
                 
                 # Create the sheet widget
                 sheet_widget = self.create_sheet_widget(file_name, sheet_name, df)
@@ -664,6 +766,17 @@ class ExcelExtractorApp(QMainWindow):
                 self.sheet_widgets[sheet_key] = widget_idx
                 
                 print(f"  Created widget at index {widget_idx} with key {sheet_key}")
+            
+            # Verification of sheet count
+            print(f"Added {added_sheet_count} sheets for file '{file_name}'")
+            if added_sheet_count != sheet_count:
+                print(f"WARNING: Expected {sheet_count} sheets but added {added_sheet_count} for file '{file_name}'")
+        
+        # Final verification
+        print(f"Added {len(added_files)} files with {len(added_sheets)} total sheets to the tree")
+        
+        # Sort the tree for better user experience
+        self.tree_view.sortItems(0, Qt.AscendingOrder)
         
         # Add a welcome widget as the first item in the stack
         welcome_widget = QWidget()
@@ -829,10 +942,30 @@ class ExcelExtractorApp(QMainWindow):
             else:
                 print(f"ERROR: Widget with key {key} not found in sheet_widgets dictionary!")
                 
-                # Emergency fallback - try to find a close match
+                # Emergency fallback - try to find a close match with sheet name
+                best_match = None
                 for available_key in self.sheet_widgets.keys():
                     if item.sheet_name in available_key:
-                        print(f"Found potential match: {available_key}")
+                        print(f"Found potential match by sheet name: {available_key}")
+                        best_match = available_key
+                        
+                # If we found a match, use it
+                if best_match:
+                    print(f"Using best match: {best_match}")
+                    widget_idx = self.sheet_widgets[best_match]
+                    self.sheet_stack.setCurrentIndex(widget_idx)
+                    
+                    # Show a popup warning to the user
+                    QMessageBox.warning(
+                        self, 
+                        "Sheet Display Issue", 
+                        f"There was an issue displaying the exact sheet you selected. " +
+                        f"Showing a similar sheet instead. The data may not be what you expected.\n\n" +
+                        f"Selected: {item.file_name} - {item.sheet_name}\n" +
+                        f"Showing: {best_match}"
+                    )
+                else:
+                    print("No matching sheet found. Keeping default view.")
                         
                 print("---- End DEBUG ----\n")
         
