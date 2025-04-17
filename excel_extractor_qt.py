@@ -700,6 +700,7 @@ class ExcelExtractorApp(QMainWindow):
         
         if file_count == 0:
             print("WARNING: No files in file_data dictionary!")
+            return
         
         # Count total sheets for statistics
         total_sheet_count = 0
@@ -714,81 +715,87 @@ class ExcelExtractorApp(QMainWindow):
         print(f"Total sheets to display: {total_sheet_count}")
         print("-----------------------------------\n")
         
-        # Verify we have all the files from the processing step
-        expected_file_count = len(self.file_data)
-        if file_count != expected_file_count:
-            print(f"WARNING: Expected {expected_file_count} files but found {file_count}")
-            print(f"Expected: {list(self.file_data.keys())}")
-            print(f"Actual: {list(file_data.keys())}")
+        # We need to control exactly how widgets are added to the stack to prevent offset issues
+        # First, create all the widgets for all files and sheets and then add them to the stack in order
+        # This avoids any potential offset issues where tree items don't match stack widget indices
         
-        # Keep a list of files and sheets to verify completeness
-        added_files = []
-        added_sheets = []
+        # Step 1: Build data structures first without adding to the stack
+        file_items = []
+        sheet_items = []
+        sheet_widgets = []
         
-        # Add each file and its sheets to the tree
+        # Step 2: Create all file and sheet tree items first
         for file_idx, (file_name, sheets) in enumerate(file_data.items()):
-            # Create file item
+            # Create file item and add to the tree
             file_item = QTreeWidgetItem(self.tree_view)
             file_item.setText(0, file_name)
             file_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
             file_item.setExpanded(True)
             
-            # Store in dictionary with unique key (file name)
-            self.tree_items[file_name] = file_item
-            added_files.append(file_name)
-            
-            print(f"Added file {file_idx+1}/{file_count} to tree: {file_name}")
+            # Store file item in our tracking list
+            file_items.append((file_name, file_item))
             
             # Add sheets as child items
             sheet_count = len(sheets)
-            added_sheet_count = 0
+            print(f"Processing file: {file_name} with {sheet_count} sheets")
             
             for sheet_idx, (sheet_name, df) in enumerate(sheets.items()):
+                # Create the sheet tree item
                 sheet_item = QTreeWidgetItem(file_item)
                 sheet_item.setText(0, sheet_name)
                 sheet_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
                 
-                # Store references to navigate to this sheet - these are critical!
+                # Store references to navigate to this sheet
                 sheet_item.file_name = file_name
                 sheet_item.sheet_name = sheet_name
                 
-                # Create a unique key for this sheet
-                sheet_key = f"{file_name}_{sheet_name}"
-                self.tree_items[sheet_key] = sheet_item
-                added_sheets.append(sheet_key)
-                added_sheet_count += 1
-                
-                print(f"  Added sheet {sheet_idx+1}/{sheet_count} to tree: {sheet_name} with key {sheet_key}")
-                
-                # Create the sheet widget
+                # Create the sheet widget for this sheet
                 sheet_widget = self.create_sheet_widget(file_name, sheet_name, df)
-                widget_idx = self.sheet_stack.addWidget(sheet_widget)
-                self.sheet_widgets[sheet_key] = widget_idx
                 
-                print(f"  Created widget at index {widget_idx} with key {sheet_key}")
-            
-            # Verification of sheet count
-            print(f"Added {added_sheet_count} sheets for file '{file_name}'")
-            if added_sheet_count != sheet_count:
-                print(f"WARNING: Expected {sheet_count} sheets but added {added_sheet_count} for file '{file_name}'")
+                # Add to our tracking lists
+                sheet_key = f"{file_name}_{sheet_name}"
+                sheet_items.append((sheet_key, sheet_item))
+                sheet_widgets.append((sheet_key, sheet_widget))
+                
+                print(f"  Created tree item and widget for sheet: {sheet_name} in file: {file_name}")
         
-        # Final verification
-        print(f"Added {len(added_files)} files with {len(added_sheets)} total sheets to the tree")
+        # Step 3: Now add all widgets to the stack in a controlled order
+        print("\n---- Adding widgets to stack in controlled order ----")
         
-        # Sort the tree for better user experience
-        self.tree_view.sortItems(0, Qt.AscendingOrder)
-        
-        # Add a welcome widget as the first item in the stack
+        # First, add a welcome widget at index 0
         welcome_widget = QWidget()
         welcome_layout = QVBoxLayout(welcome_widget)
-        welcome_label = QLabel(
-            "Select a sheet from the tree view on the left to view and select data columns."
-        )
+        welcome_label = QLabel("Select a sheet from the tree view on the left to view and select data columns.")
         welcome_label.setAlignment(Qt.AlignCenter)
         welcome_layout.addWidget(welcome_label)
+        self.sheet_stack.addWidget(welcome_widget)
         
-        # Insert it at the beginning of the stack
-        self.sheet_stack.insertWidget(0, welcome_widget)
+        # Now add all the sheet widgets
+        for idx, (sheet_key, widget) in enumerate(sheet_widgets):
+            # Add to stack and store the index 
+            widget_idx = self.sheet_stack.addWidget(widget)
+            self.sheet_widgets[sheet_key] = widget_idx
+            print(f"  Added widget {idx+1}/{len(sheet_widgets)}: {sheet_key} at index {widget_idx}")
+            
+            # Double check the widget is where we expect it
+            actual_widget = self.sheet_stack.widget(widget_idx)
+            if actual_widget != widget:
+                print(f"  ERROR: Widget mismatch at index {widget_idx}!")
+        
+        # Step 4: Store all tree items for lookup
+        for file_name, file_item in file_items:
+            self.tree_items[file_name] = file_item
+            
+        for sheet_key, sheet_item in sheet_items:
+            self.tree_items[sheet_key] = sheet_item
+            
+        # Final verification
+        print(f"\nAdded {len(file_items)} files with {len(sheet_items)} sheets to the tree")
+        print(f"Added {len(sheet_widgets)} widgets to the stack")
+        print("Dump of sheet_widgets dictionary:")
+        for key, idx in sorted(self.sheet_widgets.items()):
+            print(f"  {key} -> index {idx}")
+        print("----------------------------------------------------\n")
         
     def create_sheet_widget(self, file_name, sheet_name, df):
         """Create a widget for displaying sheet data and column selection"""
@@ -924,50 +931,107 @@ class ExcelExtractorApp(QMainWindow):
         
     def on_tree_item_clicked(self, item, column):
         """Handle tree view item click to display the corresponding sheet"""
-        # Only show sheet content if a sheet item is clicked (not a file)
+        # First, let's just ensure proper labels in the UI
         if hasattr(item, 'file_name') and hasattr(item, 'sheet_name'):
-            # Find the sheet widget and display it
-            key = f"{item.file_name}_{item.sheet_name}"
+            # This item is a sheet, not a file
+            file_name = item.file_name
+            sheet_name = item.sheet_name
+            key = f"{file_name}_{sheet_name}"
             
-            # Debug information
-            print(f"\n---- DEBUG: Tree Item Clicked ----")
-            print(f"Clicked item file: {item.file_name}, sheet: {item.sheet_name}")
-            print(f"Looking for widget with key: {key}")
-            print(f"Available widget keys: {list(self.sheet_widgets.keys())}")
+            # Enhanced debug information to help diagnose issues
+            print(f"\n================ DETAILED SHEET SELECTION DEBUG ================")
+            print(f"CLICKED: file={file_name}, sheet={sheet_name}, key={key}")
+            print(f"TREE ITEM TEXT: {item.text(0)}")
+            print(f"TREE ITEM PARENT: {item.parent().text(0) if item.parent() else 'ROOT'}")
             
+            # Get information about all sheets in this file (from our data structure)
+            if file_name in self.file_data:
+                sheets_in_file = list(self.file_data[file_name].keys())
+                print(f"SHEETS IN THIS FILE: {sheets_in_file}")
+                if sheet_name in sheets_in_file:
+                    print(f"✓ Sheet '{sheet_name}' exists in file '{file_name}' data")
+                else:
+                    print(f"✗ Sheet '{sheet_name}' NOT found in file '{file_name}' data!")
+            else:
+                print(f"✗ File '{file_name}' NOT found in file_data!")
+            
+            # Check if we have a widget for this sheet
+            print(f"\nLooking for widget with key: {key}")
+            matching_keys = [k for k in self.sheet_widgets.keys() if k == key]
+            print(f"Exact matching keys: {matching_keys}")
+            
+            # Print full mapping for debugging
+            print("\nFull sheet_widgets mapping:")
+            for k, idx in sorted(self.sheet_widgets.items()):
+                parts = k.split('_')
+                if len(parts) > 1:
+                    file = parts[0]
+                    if file == file_name:
+                        print(f"  ➤ {k} -> index {idx}")
+                    else:
+                        print(f"    {k} -> index {idx}")
+            
+            # Now attempt to find and display the widget
             if key in self.sheet_widgets:
                 widget_idx = self.sheet_widgets[key]
-                print(f"Found widget at index {widget_idx}")
+                print(f"\n✓ SUCCESS: Found widget at index {widget_idx}")
+                
+                # Get the widget to verify it's the right one
+                widget = self.sheet_stack.widget(widget_idx)
+                info_label = None
+                for child in widget.findChildren(QLabel):
+                    if "File:" in child.text():
+                        info_label = child
+                        break
+                
+                if info_label:
+                    print(f"Widget header: {info_label.text()}")
+                
+                # Show the sheet widget
                 self.sheet_stack.setCurrentIndex(widget_idx)
             else:
-                print(f"ERROR: Widget with key {key} not found in sheet_widgets dictionary!")
+                print(f"\n✗ ERROR: Widget with key {key} not found in sheet_widgets dictionary!")
                 
-                # Emergency fallback - try to find a close match with sheet name
+                # Emergency recovery procedure
+                # First try to find a sheet with the same name
+                sheet_matches = [k for k in self.sheet_widgets.keys() if f"_{sheet_name}" in k]
+                print(f"Potential sheet name matches: {sheet_matches}")
+                
+                # Try to find a sheet in the same file
+                file_matches = [k for k in self.sheet_widgets.keys() if k.startswith(f"{file_name}_")]
+                print(f"Potential file matches: {file_matches}")
+                
                 best_match = None
-                for available_key in self.sheet_widgets.keys():
-                    if item.sheet_name in available_key:
-                        print(f"Found potential match by sheet name: {available_key}")
-                        best_match = available_key
-                        
-                # If we found a match, use it
+                
+                # Prioritize file matches first (sheets in the same file)
+                if file_matches:
+                    best_match = file_matches[0]
+                    print(f"Using match from same file: {best_match}")
+                # Then try sheets with the same name
+                elif sheet_matches:
+                    best_match = sheet_matches[0]
+                    print(f"Using match with same sheet name: {best_match}")
+                
+                # If we found any match, use it as an emergency fallback
                 if best_match:
-                    print(f"Using best match: {best_match}")
                     widget_idx = self.sheet_widgets[best_match]
+                    print(f"Emergency display: Using widget at index {widget_idx}")
                     self.sheet_stack.setCurrentIndex(widget_idx)
                     
                     # Show a popup warning to the user
                     QMessageBox.warning(
                         self, 
                         "Sheet Display Issue", 
-                        f"There was an issue displaying the exact sheet you selected. " +
-                        f"Showing a similar sheet instead. The data may not be what you expected.\n\n" +
-                        f"Selected: {item.file_name} - {item.sheet_name}\n" +
-                        f"Showing: {best_match}"
+                        f"There was an issue displaying the exact sheet you selected.\n" +
+                        f"Showing a similar sheet instead as an emergency fallback.\n\n" +
+                        f"Selected: {file_name} - {sheet_name}\n" +
+                        f"Showing: {best_match}\n\n" +
+                        f"Please contact support with this information."
                     )
                 else:
-                    print("No matching sheet found. Keeping default view.")
-                        
-                print("---- End DEBUG ----\n")
+                    print("No matching sheet found - staying on current view")
+            
+            print("================ END SHEET SELECTION DEBUG ================\n")
         
     def setup_output_tab(self):
         """Setup UI for the output tab"""
