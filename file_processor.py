@@ -1,18 +1,23 @@
+#!/usr/bin/env python3
+"""
+Excel Data Extractor - Core Processing Module
+This module contains shared functionality for processing Excel files in a ZIP archive.
+"""
+
 import os
 import pandas as pd
 from zipfile import ZipFile
-import tempfile
-import streamlit as st
-from pathlib import Path
 import xlwt
+import tempfile
 
-def extract_zip_file(zip_path, extract_dir):
+def extract_zip_file(zip_path, extract_dir, log_callback=None):
     """
     Extract Excel files from a ZIP archive
     
     Parameters:
     - zip_path: Path to the ZIP file
     - extract_dir: Directory to extract files to
+    - log_callback: Optional callback function for logging
     
     Returns:
     - A list of paths to extracted Excel files
@@ -20,16 +25,18 @@ def extract_zip_file(zip_path, extract_dir):
     excel_files = []
     
     try:
+        if log_callback:
+            log_callback(f"Opening ZIP file: {zip_path}")
+        
         with ZipFile(zip_path, 'r') as zip_ref:
             # List all files in the ZIP
             file_list = zip_ref.namelist()
             
-            # Add debug information
-            st.write(f"Found {len(file_list)} files in ZIP archive.")
+            if log_callback:
+                log_callback(f"Found {len(file_list)} files in ZIP archive")
             
             # Extract only Excel files
             for file_name in file_list:
-                # More thorough debug info
                 lower_name = file_name.lower()
                 if lower_name.endswith('.xlsx') or lower_name.endswith('.xls'):
                     # Handle folder paths in ZIP
@@ -38,37 +45,39 @@ def extract_zip_file(zip_path, extract_dir):
                         
                     # Extract the file
                     try:
+                        if log_callback:
+                            log_callback(f"Extracting: {file_name}")
                         zip_ref.extract(file_name, extract_dir)
                         full_path = os.path.join(extract_dir, file_name)
                         excel_files.append(full_path)
-                        st.write(f"Extracted: {os.path.basename(file_name)}")
                     except Exception as extract_error:
-                        st.warning(f"Could not extract {file_name}: {str(extract_error)}")
+                        if log_callback:
+                            log_callback(f"Could not extract {file_name}: {str(extract_error)}")
                 
-            # Look for Excel files in any folders that might have been extracted
+            # Also look for Excel files in any folders that were extracted
             for root, dirs, files in os.walk(extract_dir):
                 for file in files:
-                    if file.lower().endswith('.xlsx') and os.path.join(root, file) not in excel_files:
+                    if file.lower().endswith(('.xlsx', '.xls')) and os.path.join(root, file) not in excel_files:
                         excel_files.append(os.path.join(root, file))
-                        st.write(f"Found additional Excel file: {file}")
+                        if log_callback:
+                            log_callback(f"Found additional Excel file: {file}")
     
     except Exception as e:
-        st.error(f"Error extracting ZIP file: {str(e)}")
+        if log_callback:
+            log_callback(f"Error extracting ZIP file: {str(e)}")
         return []
     
-    if not excel_files:
-        st.warning("No Excel files (.xlsx) were found in the ZIP archive.")
-    else:
-        st.success(f"Successfully extracted {len(excel_files)} Excel files.")
-    
+    if log_callback:
+        log_callback(f"Extracted {len(excel_files)} Excel files")
     return excel_files
 
-def read_excel_files(file_paths):
+def read_excel_files(file_paths, log_callback=None):
     """
     Read data from multiple Excel files
     
     Parameters:
     - file_paths: List of paths to Excel files
+    - log_callback: Optional callback function for logging
     
     Returns:
     - A nested dictionary structure: {file_name: {sheet_name: dataframe}}
@@ -76,41 +85,42 @@ def read_excel_files(file_paths):
     file_data = {}
     
     if not file_paths:
-        st.warning("No Excel files to process.")
+        if log_callback:
+            log_callback("No Excel files to process")
         return file_data
     
-    st.write(f"Attempting to read {len(file_paths)} Excel files...")
+    if log_callback:
+        log_callback(f"Reading {len(file_paths)} Excel files...")
     
     for file_path in file_paths:
         try:
-            # Log the file we're trying to read
-            st.write(f"Reading file: {os.path.basename(file_path)}")
-            
-            # Verify file exists
-            if not os.path.exists(file_path):
-                st.warning(f"File does not exist: {file_path}")
-                continue
-            
             # Get just the filename without path
             file_name = os.path.basename(file_path)
+            if log_callback:
+                log_callback(f"Reading: {file_name}")
             
             # Read all sheets from the Excel file
             try:
                 excel_file = pd.ExcelFile(file_path)
                 sheet_names = excel_file.sheet_names
-                st.write(f"Found {len(sheet_names)} sheets in {file_name}")
+                if log_callback:
+                    log_callback(f"Found {len(sheet_names)} sheets in {file_name}")
             except Exception as excel_error:
-                st.warning(f"Error opening Excel file '{file_name}': {str(excel_error)}")
+                if log_callback:
+                    log_callback(f"Error opening Excel file '{file_name}': {str(excel_error)}")
+                
                 # Try alternate approach for older Excel formats
                 try:
                     # For xls files
                     if file_path.lower().endswith('.xls'):
                         df = pd.read_excel(file_path, engine='xlrd')
                         file_data[file_name] = {"Sheet1": df}
-                        st.write(f"Successfully read {file_name} using xlrd engine")
+                        if log_callback:
+                            log_callback(f"Successfully read {file_name} using xlrd engine")
                         continue
                 except Exception as alt_error:
-                    st.warning(f"Alternative read approach failed: {str(alt_error)}")
+                    if log_callback:
+                        log_callback(f"Alternative read approach failed: {str(alt_error)}")
                 continue
             
             # Initialize the entry for this file
@@ -124,33 +134,40 @@ def read_excel_files(file_paths):
                     # Only keep sheets that have data
                     if not df.empty:
                         file_data[file_name][sheet_name] = df
-                        st.write(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
+                        if log_callback:
+                            log_callback(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
                     else:
-                        st.write(f"Sheet '{sheet_name}' is empty, skipping")
+                        if log_callback:
+                            log_callback(f"Sheet '{sheet_name}' is empty, skipping")
                 except Exception as e:
-                    st.warning(f"Error reading sheet '{sheet_name}' in file '{file_name}': {str(e)}")
+                    if log_callback:
+                        log_callback(f"Error reading sheet '{sheet_name}': {str(e)}")
                     continue
             
             # If no sheets were successfully read, remove this file entry
             if not file_data[file_name]:
-                st.warning(f"No data found in file '{file_name}'")
+                if log_callback:
+                    log_callback(f"No data found in file '{file_name}'")
                 del file_data[file_name]
                 
         except Exception as e:
-            st.warning(f"Error reading file '{os.path.basename(file_path)}': {str(e)}")
+            if log_callback:
+                log_callback(f"Error reading file '{os.path.basename(file_path)}': {str(e)}")
             continue
     
     # Provide summary
     file_count = len(file_data)
     if file_count > 0:
         sheet_count = sum(len(sheets) for sheets in file_data.values())
-        st.success(f"Successfully read {file_count} files with a total of {sheet_count} sheets.")
+        if log_callback:
+            log_callback(f"Successfully read {file_count} files with a total of {sheet_count} sheets")
     else:
-        st.error("Could not read any data from the Excel files.")
+        if log_callback:
+            log_callback("Could not read any data from the Excel files")
     
     return file_data
 
-def process_and_merge_data(file_data, selected_columns, output_path):
+def process_and_merge_data(file_data, selected_columns, output_path, log_callback=None):
     """
     Process and merge selected data from multiple Excel files
     
@@ -158,11 +175,15 @@ def process_and_merge_data(file_data, selected_columns, output_path):
     - file_data: Nested dictionary of file data {file_name: {sheet_name: dataframe}}
     - selected_columns: Nested dictionary of selected columns {file_name: {sheet_name: [columns]}}
     - output_path: Path to save the merged Excel file
+    - log_callback: Optional callback function for logging
     
     Returns:
     - True if successful, False otherwise
     """
     try:
+        if log_callback:
+            log_callback("Starting data processing...")
+        
         # Create a new workbook
         workbook = xlwt.Workbook()
         
@@ -171,6 +192,9 @@ def process_and_merge_data(file_data, selected_columns, output_path):
         
         # Process each file
         for file_name, sheets in file_data.items():
+            if log_callback:
+                log_callback(f"Processing file: {file_name}")
+            
             # Process each sheet in the file
             for sheet_name, df in sheets.items():
                 # Get the selected columns for this sheet
@@ -178,13 +202,19 @@ def process_and_merge_data(file_data, selected_columns, output_path):
                 
                 # Skip if no columns were selected for this sheet
                 if not cols:
+                    if log_callback:
+                        log_callback(f"No columns selected for {file_name} - {sheet_name}, skipping")
                     continue
+                
+                if log_callback:
+                    log_callback(f"Processing sheet: {sheet_name} with {len(cols)} selected columns")
                 
                 # Extract only the selected columns
                 subset_df = df[cols].copy()
                 
                 # Create a worksheet name from the file and sheet names
                 # Ensure it's valid and not too long for Excel
+                from pathlib import Path
                 ws_name = f"{Path(file_name).stem}_{sheet_name}"
                 ws_name = ws_name.replace("[", "").replace("]", "").replace(":", "")
                 ws_name = ws_name[:31]  # Excel has 31 char limit for sheet names
@@ -232,10 +262,15 @@ def process_and_merge_data(file_data, selected_columns, output_path):
                     row += 1
         
         # Save the workbook
+        if log_callback:
+            log_callback(f"Saving output to: {output_path}")
         workbook.save(output_path)
         
+        if log_callback:
+            log_callback(f"Processing complete. Created {worksheet_count} worksheets plus summary.")
         return True
     
     except Exception as e:
-        st.error(f"Error processing and merging data: {str(e)}")
-        raise e
+        if log_callback:
+            log_callback(f"Error processing and merging data: {str(e)}")
+        return False

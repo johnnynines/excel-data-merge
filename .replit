@@ -21,10 +21,6 @@ args = "Streamlit Server"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "PyQt Application"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
 args = "CLI Demo"
 
 [[workflows.workflow]]
@@ -43,20 +39,6 @@ args = "streamlit run app.py --server.port 5000"
 waitForPort = 5000
 
 [[workflows.workflow]]
-name = "PyQt Application"
-author = "agent"
-
-[workflows.workflow.metadata]
-agentRequireRestartOnSave = false
-
-[[workflows.workflow.tasks]]
-task = "packager.installForAll"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "python excel_extractor_qt.py"
-
-[[workflows.workflow]]
 name = "CLI Demo"
 author = "agent"
 
@@ -68,7 +50,7 @@ task = "packager.installForAll"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "echo \"This is a demo of how to use the command-line version. The actual application needs a ZIP file with Excel files to process.\" && echo \"\" && echo \"Example usage:\" && echo \"python excel_extractor_cli.py example.zip output.xls\""
+args = "python excel_extractor_cli.py --help"
 
 [[ports]]
 localPort = 5000
