@@ -29,50 +29,106 @@ from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 # Model for displaying Excel data in a table
 class PandasTableModel(QAbstractTableModel):
     def __init__(self, data):
-        super().__init__()
-        self._data = data
+        """
+        Initialize the table model with pandas DataFrame data
         
-        # Ensure the dataframe is clean and has valid data
-        if isinstance(data, pd.DataFrame):
-            # Drop fully empty rows and columns
-            self._data = self._data.dropna(how='all').dropna(axis=1, how='all')
+        Parameters:
+        - data: pandas DataFrame or something that can be converted to one
+        """
+        super().__init__()
+        
+        # Ensure we're working with a DataFrame
+        if not isinstance(data, pd.DataFrame):
+            try:
+                data = pd.DataFrame(data)
+            except:
+                # Create an empty dataframe with a message if data is invalid
+                data = pd.DataFrame({'Error': ['Invalid data provided to table model']})
+        
+        # Store original data
+        self._original_data = data
+        
+        # Process the dataframe for display
+        self._process_dataframe()
+    
+    def _process_dataframe(self):
+        """Clean and prepare the dataframe for display"""
+        # Make a copy to avoid modifying original
+        self._data = self._original_data.copy()
+        
+        # Handle empty or problematic dataframes
+        if self._data.empty or len(self._data.columns) == 0:
+            self._data = pd.DataFrame({'No Data': ['Empty sheet or all rows are blank']})
+            return
             
-            # If there are no rows left, create a default dataframe with at least one row
-            # to avoid display issues
-            if len(self._data) == 0 or len(self._data.columns) == 0:
-                self._data = pd.DataFrame({'No Data': ['Empty sheet or all rows are blank']})
+        # Drop fully empty rows and columns
+        self._data = self._data.dropna(how='all').dropna(axis=1, how='all')
+        
+        # If there are no rows left after cleaning, create a default dataframe
+        if len(self._data) == 0 or len(self._data.columns) == 0:
+            self._data = pd.DataFrame({'No Data': ['No content found after removing blank rows']})
+            return
+            
+        # Ensure column names are strings
+        self._data.columns = [str(col) if not pd.isna(col) else f"Column_{i}" 
+                             for i, col in enumerate(self._data.columns)]
 
     def rowCount(self, parent=None):
+        """Return the number of rows in the dataframe"""
+        if parent and parent.isValid():
+            return 0
         return len(self._data)
 
     def columnCount(self, parent=None):
+        """Return the number of columns in the dataframe"""
+        if parent and parent.isValid():
+            return 0
         return len(self._data.columns)
 
     def data(self, index, role=Qt.DisplayRole):
+        """Return the data at the given index for the specified role"""
         if not index.isValid():
             return None
-        
-        if role == Qt.DisplayRole:
+            
+        if role == Qt.DisplayRole or role == Qt.EditRole:
             try:
                 value = self._data.iloc[index.row(), index.column()]
                 # Handle NaN and None values properly
                 if pd.isna(value):
                     return ""
+                # Convert all values to string for display
                 return str(value)
             except (IndexError, KeyError):
                 return ""
         
+        # Add styling for alternate rows
+        if role == Qt.BackgroundRole:
+            if index.row() % 2 == 0:
+                # Light background for even rows
+                return QColor(248, 248, 248)
+        
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
+        """Return the header data for the specified section, orientation and role"""
         if role == Qt.DisplayRole:
             if orientation == Qt.Horizontal:
                 try:
+                    # Use column name for horizontal headers
                     return str(self._data.columns[section])
                 except IndexError:
-                    return str(section)
+                    # Fallback to section number
+                    return f"Column_{section}"
             else:
+                # Row numbers for vertical header (1-based)
                 return str(section + 1)
+        
+        # Add styling for headers
+        if role == Qt.FontRole:
+            font = QFont()
+            font.setBold(True)
+            return font
+            
         return None
 
 # Worker thread for processing files
@@ -194,44 +250,71 @@ class FileProcessorThread(QThread):
                 # Read each sheet and store its data
                 for sheet_name in sheet_names:
                     try:
-                        # Read the Excel sheet
-                        df = pd.read_excel(excel_file, sheet_name=sheet_name)
+                        # Read the Excel sheet without header inference initially
+                        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
                         
-                        # Check if the sheet has content
+                        # Check if the dataframe has any content at all
                         if not df.empty:
-                            # Handle blank first rows by checking if they contain any non-NaN values
-                            # This helps when Excel sheets have blank header rows
-                            has_content = False
-                            for idx, row in df.iterrows():
-                                if not row.isna().all():
-                                    has_content = True
-                                    break
-                                    
-                            if has_content:
-                                # Clean up the dataframe by removing completely blank rows
-                                df = df.dropna(how='all')
+                            # Step 1: Remove all completely blank rows
+                            df = df.dropna(how='all').reset_index(drop=True)
+                            
+                            # If we still have rows after cleanup
+                            if not df.empty:
+                                # Step 2: Find the first non-blank row that can serve as a header
+                                header_row_idx = None
+                                data_starts_at_idx = 0
                                 
-                                # If the first row is all NaN after dropping blank rows,
-                                # use the first non-NaN row as header
-                                if df.shape[0] > 0 and df.iloc[0].isna().all():
-                                    # Find the first non-blank row to use as header
-                                    first_valid_row = None
-                                    for idx, row in df.iterrows():
-                                        if not row.isna().all():
-                                            first_valid_row = idx
-                                            break
-                                    
-                                    if first_valid_row is not None:
-                                        # Use the first non-blank row as header
-                                        new_header = df.iloc[first_valid_row]
-                                        df = df.iloc[first_valid_row+1:]
-                                        df.columns = new_header
-                                        self.progress_signal.emit(f"Using row {first_valid_row+1} as header for sheet '{sheet_name}'")
+                                # Look through the first few rows to find a suitable header
+                                max_rows_to_check = min(10, len(df))  # Check up to 10 rows or all rows if less
                                 
-                                file_data[file_name][sheet_name] = df
-                                self.progress_signal.emit(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
+                                for i in range(max_rows_to_check):
+                                    row = df.iloc[i]
+                                    # If row has at least one non-NaN value, it could be a header
+                                    if not row.isna().all():
+                                        header_row_idx = i
+                                        data_starts_at_idx = i + 1  # Data starts after header
+                                        break
+                                
+                                # If we found a potential header row
+                                if header_row_idx is not None:
+                                    self.progress_signal.emit(f"Using row {header_row_idx + 1} as header for sheet '{sheet_name}'")
+                                    
+                                    # Use this row as header
+                                    header = df.iloc[header_row_idx]
+                                    
+                                    # Create a new dataframe with proper headers
+                                    if data_starts_at_idx < len(df):
+                                        # Get data rows
+                                        data_df = df.iloc[data_starts_at_idx:].copy()
+                                        
+                                        # Set the column names from header
+                                        header_values = [str(val) if not pd.isna(val) else f"Column_{i}" 
+                                                       for i, val in enumerate(header)]
+                                        data_df.columns = header_values
+                                        
+                                        # Store the processed dataframe
+                                        file_data[file_name][sheet_name] = data_df
+                                        
+                                        self.progress_signal.emit(f"Sheet '{sheet_name}' has {len(data_df)} rows and {len(data_df.columns)} columns")
+                                    else:
+                                        # No data rows after header, create empty DataFrame with header columns
+                                        header_values = [str(val) if not pd.isna(val) else f"Column_{i}" 
+                                                       for i, val in enumerate(header)]
+                                        empty_df = pd.DataFrame(columns=header_values)
+                                        file_data[file_name][sheet_name] = empty_df
+                                        
+                                        self.progress_signal.emit(f"Sheet '{sheet_name}' has header but no data rows")
+                                else:
+                                    # No suitable header found, use default column names
+                                    self.progress_signal.emit(f"No header row found in sheet '{sheet_name}', using default column names")
+                                    
+                                    # Create column names
+                                    df.columns = [f"Column_{i}" for i in range(len(df.columns))]
+                                    file_data[file_name][sheet_name] = df
+                                    
+                                    self.progress_signal.emit(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
                             else:
-                                self.progress_signal.emit(f"Sheet '{sheet_name}' has no meaningful content, skipping")
+                                self.progress_signal.emit(f"Sheet '{sheet_name}' has only blank rows, skipping")
                         else:
                             self.progress_signal.emit(f"Sheet '{sheet_name}' is empty, skipping")
                     except Exception as e:
@@ -620,24 +703,51 @@ class ExcelExtractorApp(QMainWindow):
         # Create table view
         table_view = QTableView()
         
-        # Ensure we have data to display
+        # Enhanced data display handling
         try:
-            # Check if the dataframe is valid and has content
             if df is not None and not df.empty:
-                # Get sample rows, ensuring proper handling of empty datasets
-                sample_df = df.head(5)  # Show first 5 rows
-                if sample_df.empty:
-                    # If sample is empty but main df isn't, maybe header row selection issues
-                    # Try to get at least some data for display
-                    sample_df = pd.DataFrame({'Note': ['Sheet content is available but may have formatting issues']})
-                model = PandasTableModel(sample_df)
+                # Make a copy of the dataframe to avoid modifying the original
+                display_df = df.copy()
+                
+                # Clean display data by removing empty rows for preview (original data remains intact)
+                display_df = display_df.dropna(how='all')
+                
+                # Show only the first several rows for preview
+                preview_rows = min(10, len(display_df))
+                if preview_rows > 0:
+                    sample_df = display_df.head(preview_rows)
+                    model = PandasTableModel(sample_df)
+                    
+                    # Add informative status message about data
+                    status_label = QLabel(f"Displaying {preview_rows} of {len(df)} rows - {len(df.columns)} columns")
+                    status_label.setStyleSheet("color: #666; font-style: italic;")
+                    preview_layout.addWidget(status_label)
+                else:
+                    # In case dropna removed all rows
+                    model = PandasTableModel(pd.DataFrame({
+                        'Note': ['This sheet contains data but no non-empty rows for preview']
+                    }))
             else:
-                # Create a default model with a message
-                model = PandasTableModel(pd.DataFrame({'Note': ['No data found in this sheet or all rows are blank']}))
+                # Handle completely empty dataframe
+                model = PandasTableModel(pd.DataFrame({
+                    'Note': ['No data found in this sheet - it appears to be empty']
+                }))
+                
+                # Disable column selection for empty sheets
+                select_all_btn = QPushButton("Select All")
+                select_all_btn.setEnabled(False)
+                deselect_all_btn = QPushButton("Deselect All")
+                deselect_all_btn.setEnabled(False)
         except Exception as e:
-            # In case of any errors, display a message
-            model = PandasTableModel(pd.DataFrame({'Error': [f'Could not display sheet data: {str(e)}']}))
+            # Handle any errors that might occur
+            model = PandasTableModel(pd.DataFrame({
+                'Error': [f'Could not display sheet data: {str(e)}']
+            }))
+            
+            # Log the error for debugging
+            print(f"Error displaying sheet data: {str(e)}")
         
+        # Apply the model to the table view
         table_view.setModel(model)
         
         # Set table properties
