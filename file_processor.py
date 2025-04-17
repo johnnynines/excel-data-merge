@@ -129,13 +129,47 @@ def read_excel_files(file_paths, log_callback=None):
             # Read each sheet and store its data
             for sheet_name in sheet_names:
                 try:
+                    # Read the Excel sheet
                     df = pd.read_excel(excel_file, sheet_name=sheet_name)
                     
-                    # Only keep sheets that have data
+                    # Check if the sheet has content
                     if not df.empty:
-                        file_data[file_name][sheet_name] = df
-                        if log_callback:
-                            log_callback(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
+                        # Handle blank first rows by checking if they contain any non-NaN values
+                        # This helps when Excel sheets have blank header rows
+                        has_content = False
+                        for idx, row in df.iterrows():
+                            if not row.isna().all():
+                                has_content = True
+                                break
+                                
+                        if has_content:
+                            # Clean up the dataframe by removing completely blank rows
+                            df = df.dropna(how='all')
+                            
+                            # If the first row is all NaN after dropping blank rows,
+                            # use the first non-NaN row as header
+                            if df.shape[0] > 0 and df.iloc[0].isna().all():
+                                # Find the first non-blank row to use as header
+                                first_valid_row = None
+                                for idx, row in df.iterrows():
+                                    if not row.isna().all():
+                                        first_valid_row = idx
+                                        break
+                                
+                                if first_valid_row is not None:
+                                    # Use the first non-blank row as header
+                                    new_header = df.iloc[first_valid_row]
+                                    df = df.iloc[first_valid_row+1:]
+                                    df.columns = new_header
+                                    if log_callback:
+                                        log_callback(f"Using row {first_valid_row+1} as header for sheet '{sheet_name}'")
+                            
+                            file_data[file_name][sheet_name] = df
+                            if log_callback:
+                                log_callback(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
+                        else:
+                            if log_callback:
+                                log_callback(f"Sheet '{sheet_name}' has no meaningful content, skipping")
                     else:
                         if log_callback:
                             log_callback(f"Sheet '{sheet_name}' is empty, skipping")
