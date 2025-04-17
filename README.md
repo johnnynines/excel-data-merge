@@ -4,10 +4,9 @@ A MacOS application for extracting and merging selected data from multiple Excel
 
 ## Overview
 
-This repository contains two implementations of the Excel Data Extractor:
+This repository contains the Excel Data Extractor:
 
-1. **PyQt5 Desktop Application** (`excel_extractor_qt.py`) - A native MacOS desktop application with a graphical user interface
-2. **Command-Line Version** (`excel_extractor_cli.py`) - A simple command-line interface for the same functionality
+1. **wxPython Desktop Application** (`excel_extractor_wx.py`) - A native MacOS desktop application with a graphical user interface, optimized specifically for MacOS
 
 The application allows you to:
 - Extract Excel files from a ZIP archive
