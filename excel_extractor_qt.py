@@ -13,8 +13,7 @@ import zipfile
 from pathlib import Path
 import xlwt
 
-# Set environment variable for improved macOS look and feel
-os.environ['QT_MAC_WANTS_LAYER'] = '1'  # Improves rendering on macOS
+# Qt integration settings are now in the main() function for better organization
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -96,11 +95,8 @@ class PandasTableModel(QAbstractTableModel):
             except (IndexError, KeyError):
                 return ""
         
-        # No alternating row colors per user request
-        # if role == Qt.BackgroundRole:
-        #    if index.row() % 2 == 0:
-        #        # Light background for even rows
-        #        return QColor(248, 248, 248)
+        # Dark mode compatibility: Use system palette for proper colors
+        # Don't set any explicit background colors to respect OS theme
         
         return None
 
@@ -888,22 +884,20 @@ class ExcelExtractorApp(QMainWindow):
         table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         table_view.setAlternatingRowColors(False)  # Turn off alternating colors per user request
         
-        # Apply style sheet to ensure a clean look with no alternating colors
+        # Instead of using stylesheet for colors, use palette colors to respect dark/light mode
+        # Remove any explicit styling that would interfere with system colors
         table_view.setStyleSheet("""
             QTableView {
-                gridline-color: #d0d0d0;
-                background-color: white;
-                alternate-background-color: white;  /* Force same color for alternate rows */
+                gridline-color: palette(mid);
+                alternate-background-color: palette(base);  /* Use system palette colors */
             }
             QTableView::item {
                 border: 0px;
                 padding: 5px;
-                background-color: white;
             }
             QHeaderView::section {
-                background-color: #f0f0f0;
                 padding: 4px;
-                border: 1px solid #d0d0d0;
+                border: 1px solid palette(mid);
             }
         """)
         
@@ -1521,16 +1515,25 @@ def main():
         # High DPI scaling for Retina displays
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+        
+        # Enable native macOS dark mode support
+        os.environ['QT_MAC_WANTS_LAYER'] = '1'
     
     app = QApplication(sys.argv)
     
     # Apply styling based on platform
     if sys.platform == 'darwin':
-        # Use macOS native style for best integration
+        # Use macOS native style for best integration including dark mode support
         app.setStyle("macintosh")
+        
+        # Enable automatic palette adjustment based on system appearance
+        app.setAttribute(Qt.AA_DontCreateNativeWidgetSiblings)
     else:
         # For non-macOS platforms, use Fusion style which looks modern
         app.setStyle("Fusion")
+    
+    # Set application-wide attribute to use the native color scheme (respects dark mode)
+    app.setAttribute(Qt.AA_UseStyleSheetPropagationInWidgetStyles, True)
     
     window = ExcelExtractorApp()
     window.show()
