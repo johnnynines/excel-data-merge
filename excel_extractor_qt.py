@@ -52,24 +52,19 @@ class PandasTableModel(QAbstractTableModel):
         self._process_dataframe()
     
     def _process_dataframe(self):
-        """Clean and prepare the dataframe for display"""
+        """
+        Clean and prepare the dataframe for display
+        SIMPLIFIED: No blank row handling, just make it displayable
+        """
         # Make a copy to avoid modifying original
         self._data = self._original_data.copy()
         
-        # Handle empty or problematic dataframes
-        if self._data.empty or len(self._data.columns) == 0:
-            self._data = pd.DataFrame({'No Data': ['Empty sheet or all rows are blank']})
+        # Handle completely empty dataframes
+        if self._data.empty:
+            self._data = pd.DataFrame({'No Data': ['Empty sheet - no data to display']})
             return
             
-        # Drop fully empty rows and columns
-        self._data = self._data.dropna(how='all').dropna(axis=1, how='all')
-        
-        # If there are no rows left after cleaning, create a default dataframe
-        if len(self._data) == 0 or len(self._data.columns) == 0:
-            self._data = pd.DataFrame({'No Data': ['No content found after removing blank rows']})
-            return
-            
-        # Ensure column names are strings
+        # Ensure column names are strings (this is required for display)
         self._data.columns = [str(col) if not pd.isna(col) else f"Column_{i}" 
                              for i, col in enumerate(self._data.columns)]
 
@@ -250,73 +245,30 @@ class FileProcessorThread(QThread):
                 # Read each sheet and store its data
                 for sheet_name in sheet_names:
                     try:
-                        # Read the Excel sheet without header inference initially
-                        df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+                        # SIMPLIFIED APPROACH: Read the Excel sheet with the simplest method possible
+                        # Always grab the raw data first
+                        raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
                         
-                        # Check if the dataframe has any content at all
-                        if not df.empty:
-                            # Step 1: Remove all completely blank rows
-                            df = df.dropna(how='all').reset_index(drop=True)
-                            
-                            # If we still have rows after cleanup
-                            if not df.empty:
-                                # Step 2: Find the first non-blank row that can serve as a header
-                                header_row_idx = None
-                                data_starts_at_idx = 0
-                                
-                                # Look through the first few rows to find a suitable header
-                                max_rows_to_check = min(10, len(df))  # Check up to 10 rows or all rows if less
-                                
-                                for i in range(max_rows_to_check):
-                                    row = df.iloc[i]
-                                    # If row has at least one non-NaN value, it could be a header
-                                    if not row.isna().all():
-                                        header_row_idx = i
-                                        data_starts_at_idx = i + 1  # Data starts after header
-                                        break
-                                
-                                # If we found a potential header row
-                                if header_row_idx is not None:
-                                    self.progress_signal.emit(f"Using row {header_row_idx + 1} as header for sheet '{sheet_name}'")
-                                    
-                                    # Use this row as header
-                                    header = df.iloc[header_row_idx]
-                                    
-                                    # Create a new dataframe with proper headers
-                                    if data_starts_at_idx < len(df):
-                                        # Get data rows
-                                        data_df = df.iloc[data_starts_at_idx:].copy()
-                                        
-                                        # Set the column names from header
-                                        header_values = [str(val) if not pd.isna(val) else f"Column_{i}" 
-                                                       for i, val in enumerate(header)]
-                                        data_df.columns = header_values
-                                        
-                                        # Store the processed dataframe
-                                        file_data[file_name][sheet_name] = data_df
-                                        
-                                        self.progress_signal.emit(f"Sheet '{sheet_name}' has {len(data_df)} rows and {len(data_df.columns)} columns")
-                                    else:
-                                        # No data rows after header, create empty DataFrame with header columns
-                                        header_values = [str(val) if not pd.isna(val) else f"Column_{i}" 
-                                                       for i, val in enumerate(header)]
-                                        empty_df = pd.DataFrame(columns=header_values)
-                                        file_data[file_name][sheet_name] = empty_df
-                                        
-                                        self.progress_signal.emit(f"Sheet '{sheet_name}' has header but no data rows")
-                                else:
-                                    # No suitable header found, use default column names
-                                    self.progress_signal.emit(f"No header row found in sheet '{sheet_name}', using default column names")
-                                    
-                                    # Create column names
-                                    df.columns = [f"Column_{i}" for i in range(len(df.columns))]
-                                    file_data[file_name][sheet_name] = df
-                                    
-                                    self.progress_signal.emit(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
-                            else:
-                                self.progress_signal.emit(f"Sheet '{sheet_name}' has only blank rows, skipping")
-                        else:
-                            self.progress_signal.emit(f"Sheet '{sheet_name}' is empty, skipping")
+                        self.progress_signal.emit(f"Raw sheet '{sheet_name}' has {len(raw_df)} rows and {len(raw_df.columns)} columns")
+                        
+                        # If dataframe is completely empty, skip it
+                        if raw_df.empty:
+                            self.progress_signal.emit(f"Sheet '{sheet_name}' is completely empty, skipping")
+                            continue
+                        
+                        # IMPORTANT: Always create a working dataframe with the data, regardless of its structure
+                        # This ensures the data is accessible even with unusual formatting
+                        
+                        # 1. Give generic column names
+                        column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
+                        
+                        # 2. Create a dataframe with these columns, keeping ALL data
+                        df = pd.DataFrame(raw_df.values, columns=column_names)
+                        
+                        # 3. Store this dataframe even if it has blank rows - important to not lose data
+                        file_data[file_name][sheet_name] = df
+                        
+                        self.progress_signal.emit(f"Successfully processed sheet '{sheet_name}' with {len(df)} rows and {len(df.columns)} columns")
                     except Exception as e:
                         self.progress_signal.emit(f"Error reading sheet '{sheet_name}': {str(e)}")
                         continue
@@ -703,41 +655,36 @@ class ExcelExtractorApp(QMainWindow):
         # Create table view
         table_view = QTableView()
         
-        # Enhanced data display handling
+        # Super-simplified data handling - keep it as basic as possible
         try:
+            # Always try to display some data, regardless of its structure
             if df is not None and not df.empty:
-                # Make a copy of the dataframe to avoid modifying the original
-                display_df = df.copy()
+                # Take the first few rows of the dataframe as is, without any preprocessing
+                # This ensures we display data even if the first rows are blank
+                preview_rows = min(10, len(df))
+                sample_df = df.head(preview_rows)
                 
-                # Clean display data by removing empty rows for preview (original data remains intact)
-                display_df = display_df.dropna(how='all')
+                # Create the model with the raw data exactly as it was read
+                model = PandasTableModel(sample_df)
                 
-                # Show only the first several rows for preview
-                preview_rows = min(10, len(display_df))
-                if preview_rows > 0:
-                    sample_df = display_df.head(preview_rows)
-                    model = PandasTableModel(sample_df)
-                    
-                    # Add informative status message about data
-                    status_label = QLabel(f"Displaying {preview_rows} of {len(df)} rows - {len(df.columns)} columns")
-                    status_label.setStyleSheet("color: #666; font-style: italic;")
-                    preview_layout.addWidget(status_label)
-                else:
-                    # In case dropna removed all rows
-                    model = PandasTableModel(pd.DataFrame({
-                        'Note': ['This sheet contains data but no non-empty rows for preview']
-                    }))
+                # Add informative status message
+                total_rows = len(df)
+                cols = len(df.columns)
+                status_label = QLabel(f"Displaying {preview_rows} of {total_rows} rows - {cols} columns")
+                status_label.setStyleSheet("color: #666; font-style: italic;")
+                preview_layout.addWidget(status_label)
+                
+                # Add warning if there might be blank rows
+                blank_count = df.isna().all(axis=1).sum()
+                if blank_count > 0:
+                    blank_label = QLabel(f"Note: This sheet contains {blank_count} blank rows which are kept in the data.")
+                    blank_label.setStyleSheet("color: #993300; font-style: italic;")
+                    preview_layout.addWidget(blank_label)
             else:
-                # Handle completely empty dataframe
+                # Only if truly empty, show a message
                 model = PandasTableModel(pd.DataFrame({
                     'Note': ['No data found in this sheet - it appears to be empty']
                 }))
-                
-                # Disable column selection for empty sheets
-                select_all_btn = QPushButton("Select All")
-                select_all_btn.setEnabled(False)
-                deselect_all_btn = QPushButton("Deselect All")
-                deselect_all_btn.setEnabled(False)
         except Exception as e:
             # Handle any errors that might occur
             model = PandasTableModel(pd.DataFrame({

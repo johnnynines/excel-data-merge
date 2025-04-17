@@ -129,80 +129,33 @@ def read_excel_files(file_paths, log_callback=None):
             # Read each sheet and store its data
             for sheet_name in sheet_names:
                 try:
-                    # Read the Excel sheet without header inference initially
-                    df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+                    # SIMPLIFIED APPROACH: Read the Excel sheet with the simplest method possible
+                    # Always grab the raw data first
+                    raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
                     
-                    # Check if the dataframe has any content at all
-                    if not df.empty:
-                        # Step 1: Remove all completely blank rows
-                        df = df.dropna(how='all').reset_index(drop=True)
-                        
-                        # If we still have rows after cleanup
-                        if not df.empty:
-                            # Step 2: Find the first non-blank row that can serve as a header
-                            header_row_idx = None
-                            data_starts_at_idx = 0
-                            
-                            # Look through the first few rows to find a suitable header
-                            max_rows_to_check = min(10, len(df))  # Check up to 10 rows or all rows if less
-                            
-                            for i in range(max_rows_to_check):
-                                row = df.iloc[i]
-                                # If row has at least one non-NaN value, it could be a header
-                                if not row.isna().all():
-                                    header_row_idx = i
-                                    data_starts_at_idx = i + 1  # Data starts after header
-                                    break
-                            
-                            # If we found a potential header row
-                            if header_row_idx is not None:
-                                if log_callback:
-                                    log_callback(f"Using row {header_row_idx + 1} as header for sheet '{sheet_name}'")
-                                
-                                # Use this row as header
-                                header = df.iloc[header_row_idx]
-                                
-                                # Create a new dataframe with proper headers
-                                if data_starts_at_idx < len(df):
-                                    # Get data rows
-                                    data_df = df.iloc[data_starts_at_idx:].copy()
-                                    
-                                    # Set the column names from header
-                                    header_values = [str(val) if not pd.isna(val) else f"Column_{i}" 
-                                                    for i, val in enumerate(header)]
-                                    data_df.columns = header_values
-                                    
-                                    # Store the processed dataframe
-                                    file_data[file_name][sheet_name] = data_df
-                                    
-                                    if log_callback:
-                                        log_callback(f"Sheet '{sheet_name}' has {len(data_df)} rows and {len(data_df.columns)} columns")
-                                else:
-                                    # No data rows after header, create empty DataFrame with header columns
-                                    header_values = [str(val) if not pd.isna(val) else f"Column_{i}" 
-                                                    for i, val in enumerate(header)]
-                                    empty_df = pd.DataFrame(columns=header_values)
-                                    file_data[file_name][sheet_name] = empty_df
-                                    
-                                    if log_callback:
-                                        log_callback(f"Sheet '{sheet_name}' has header but no data rows")
-                            else:
-                                # No suitable header found, use default column names
-                                if log_callback:
-                                    log_callback(f"No header row found in sheet '{sheet_name}', using default column names")
-                                
-                                # Create column names
-                                df.columns = [f"Column_{i}" for i in range(len(df.columns))]
-                                file_data[file_name][sheet_name] = df
-                                
-                                if log_callback:
-                                    log_callback(f"Sheet '{sheet_name}' has {len(df)} rows and {len(df.columns)} columns")
-                        else:
-                            if log_callback:
-                                log_callback(f"Sheet '{sheet_name}' has only blank rows, skipping")
-                    else:
+                    if log_callback:
+                        log_callback(f"Raw sheet '{sheet_name}' has {len(raw_df)} rows and {len(raw_df.columns)} columns")
+                    
+                    # If dataframe is completely empty, skip it
+                    if raw_df.empty:
                         if log_callback:
-                            log_callback(f"Sheet '{sheet_name}' is empty, skipping")
+                            log_callback(f"Sheet '{sheet_name}' is completely empty, skipping")
+                        continue
+                    
+                    # IMPORTANT: Always create a working dataframe with the data, regardless of its structure
+                    # This ensures the data is accessible even with unusual formatting
+                    
+                    # 1. Give generic column names
+                    column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
+                    
+                    # 2. Create a dataframe with these columns, keeping ALL data
+                    df = pd.DataFrame(raw_df.values, columns=column_names)
+                    
+                    # 3. Store this dataframe even if it has blank rows - important to not lose data
+                    file_data[file_name][sheet_name] = df
+                    
+                    if log_callback:
+                        log_callback(f"Successfully processed sheet '{sheet_name}' with {len(df)} rows and {len(df.columns)} columns")
                 except Exception as e:
                     if log_callback:
                         log_callback(f"Error reading sheet '{sheet_name}': {str(e)}")
