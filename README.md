@@ -2,8 +2,6 @@
 
 A native macOS application for extracting and merging selected data from multiple Excel files contained in a ZIP archive.
 
-![Excel Data Extractor Screenshot](attached_assets/Screenshot%20Excel%20Data%20Extractor%20250416%2021-22-27.png)
-
 > **Note**: This application is designed specifically for macOS and features a native interface. The PyQt5 implementation provides superior macOS integration with proper dark mode support and Retina display compatibility.
 
 ## Overview
