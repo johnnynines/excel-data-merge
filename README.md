@@ -28,6 +28,7 @@ The application allows you to:
 - PyQt5 (for GUI version)
 - pandas
 - xlwt
+- xlrd
 - openpyxl
 
 ## Installation
