@@ -20,7 +20,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QMessageBox, QProgressBar,
     QTabWidget, QCheckBox, QGroupBox, QScrollArea, QGridLayout,
-    QLineEdit, QTableView, QHeaderView, QSplitter, QFrame, QStyle
+    QLineEdit, QTableView, QHeaderView, QSplitter, QFrame, QStyle,
+    QTreeWidget, QTreeWidgetItem, QStackedWidget
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSize
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
@@ -445,124 +446,210 @@ class ExcelExtractorApp(QMainWindow):
         layout.addStretch()
         
     def setup_selection_tab(self, file_data):
-        """Setup UI for the data selection tab based on loaded files"""
-        # Clear any existing tabs
-        while self.selection_tab.count() > 0:
-            self.selection_tab.removeTab(0)
+        """Setup UI for the data selection tab based on loaded files using a tree view"""
+        # Create a new widget for the selection tab
+        selection_widget = QWidget()
+        selection_layout = QHBoxLayout(selection_widget)
         
-        # Create a tab for each Excel file
-        for file_name, sheets in file_data.items():
-            file_tab = QWidget()
-            file_layout = QVBoxLayout(file_tab)
-            
-            # Create a nested tab widget for each sheet in the file
-            sheet_tabs = QTabWidget()
-            file_layout.addWidget(sheet_tabs)
-            
-            # Add a tab for each sheet
-            for sheet_name, df in sheets.items():
-                sheet_tab = QWidget()
-                sheet_layout = QVBoxLayout(sheet_tab)
-                
-                # Data preview
-                preview_group = QGroupBox("Data Preview")
-                preview_layout = QVBoxLayout()
-                
-                # Create table view
-                table_view = QTableView()
-                model = PandasTableModel(df.head(5))  # Show first 5 rows
-                table_view.setModel(model)
-                
-                # Set table properties
-                table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-                table_view.setAlternatingRowColors(True)
-                
-                preview_layout.addWidget(table_view)
-                preview_group.setLayout(preview_layout)
-                sheet_layout.addWidget(preview_group)
-                
-                # Column selection
-                selection_group = QGroupBox("Select Columns to Extract")
-                selection_layout = QVBoxLayout()
-                
-                # Buttons for select all/none
-                buttons_layout = QHBoxLayout()
-                select_all_btn = QPushButton("Select All")
-                deselect_all_btn = QPushButton("Deselect All")
-                
-                # Store references to these buttons with the file and sheet info
-                select_all_btn.file_name = file_name
-                select_all_btn.sheet_name = sheet_name
-                deselect_all_btn.file_name = file_name
-                deselect_all_btn.sheet_name = sheet_name
-                
-                select_all_btn.clicked.connect(self.select_all_columns)
-                deselect_all_btn.clicked.connect(self.deselect_all_columns)
-                
-                buttons_layout.addWidget(select_all_btn)
-                buttons_layout.addWidget(deselect_all_btn)
-                selection_layout.addLayout(buttons_layout)
-                
-                # Column checkboxes
-                scroll_widget = QWidget()
-                scroll_layout = QGridLayout(scroll_widget)
-                
-                # Make sure the selected_columns structure is initialized
-                if file_name not in self.selected_columns:
-                    self.selected_columns[file_name] = {}
-                if sheet_name not in self.selected_columns[file_name]:
-                    self.selected_columns[file_name][sheet_name] = []
-                
-                # Add checkboxes in a grid
-                columns = df.columns.tolist()
-                cols_per_row = 3
-                for i, col_name in enumerate(columns):
-                    row = i // cols_per_row
-                    col = i % cols_per_row
-                    
-                    checkbox = QCheckBox(str(col_name))
-                    
-                    # Store column info in the checkbox
-                    checkbox.file_name = file_name
-                    checkbox.sheet_name = sheet_name
-                    checkbox.column_name = col_name
-                    
-                    checkbox.stateChanged.connect(self.column_selection_changed)
-                    scroll_layout.addWidget(checkbox, row, col)
-                
-                # Adjust grid layout
-                scroll_layout.setColumnStretch(0, 1)
-                scroll_layout.setColumnStretch(1, 1)
-                scroll_layout.setColumnStretch(2, 1)
-                
-                # Create scroll area for checkboxes
-                scroll_area = QScrollArea()
-                scroll_area.setWidget(scroll_widget)
-                scroll_area.setWidgetResizable(True)
-                selection_layout.addWidget(scroll_area)
-                
-                selection_group.setLayout(selection_layout)
-                sheet_layout.addWidget(selection_group)
-                
-                sheet_tabs.addTab(sheet_tab, sheet_name)
-            
-            self.selection_tab.addTab(file_tab, file_name)
+        # Create a splitter for the tree view and content area
+        splitter = QSplitter(Qt.Horizontal)
+        selection_layout.addWidget(splitter)
         
-        # Add navigation buttons at the bottom of each file tab
-        for i in range(self.selection_tab.count()):
-            file_tab = self.selection_tab.widget(i)
-            file_layout = file_tab.layout()
+        # Create tree view for file and sheet navigation
+        self.tree_view = QTreeWidget()
+        self.tree_view.setHeaderLabel("Files and Sheets")
+        self.tree_view.setMinimumWidth(250)
+        self.tree_view.setExpandsOnDoubleClick(True)
+        self.tree_view.itemClicked.connect(self.on_tree_item_clicked)
+        
+        # Create stacked widget for content (will show sheet data and column selection)
+        self.sheet_stack = QStackedWidget()
+        
+        # Add tree view and stacked widget to splitter
+        splitter.addWidget(self.tree_view)
+        splitter.addWidget(self.sheet_stack)
+        
+        # Set initial splitter sizes
+        splitter.setSizes([250, 650])
+        
+        # Clear any existing content
+        if hasattr(self, 'selection_tab') and isinstance(self.selection_tab, QWidget):
+            # If selection_tab is a QTabWidget, just replace it
+            self.tabs.removeTab(1)
+            self.tabs.insertTab(1, selection_widget, "2. Select Data")
+        else:
+            self.selection_tab = selection_widget
+            self.tabs.removeTab(1)
+            self.tabs.insertTab(1, self.selection_tab, "2. Select Data")
+        
+        # Add navigation buttons at the bottom
+        nav_layout = QHBoxLayout()
+        back_btn = QPushButton("Back to Upload")
+        next_btn = QPushButton("Continue to Output")
+        
+        back_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(0))
+        next_btn.clicked.connect(self.check_selection_and_continue)
+        
+        nav_layout.addWidget(back_btn)
+        nav_layout.addWidget(next_btn)
+        
+        # Add navigation buttons at the bottom of the layout
+        bottom_widget = QWidget()
+        bottom_widget.setLayout(nav_layout)
+        selection_layout.addWidget(bottom_widget)
+        selection_layout.setStretch(0, 1)  # Make the splitter expand
+        selection_layout.setStretch(1, 0)  # Keep the navigation buttons at their preferred size
+        
+        # Populate the tree view with files and sheets
+        self.populate_tree_view(file_data)
+        
+    def populate_tree_view(self, file_data):
+        """Populate the tree view with files and sheets"""
+        self.tree_view.clear()
+        self.sheet_stack.setCurrentIndex(0)
+        
+        # Create a dictionary to store tree items by their path
+        self.tree_items = {}
+        self.sheet_widgets = {}
+        
+        # Add each file and its sheets to the tree
+        for file_idx, (file_name, sheets) in enumerate(file_data.items()):
+            # Create file item
+            file_item = QTreeWidgetItem(self.tree_view)
+            file_item.setText(0, file_name)
+            file_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
+            file_item.setExpanded(True)
+            self.tree_items[file_name] = file_item
             
-            nav_layout = QHBoxLayout()
-            back_btn = QPushButton("Back to Upload")
-            next_btn = QPushButton("Continue to Output")
+            # Add sheets as child items
+            for sheet_idx, (sheet_name, df) in enumerate(sheets.items()):
+                sheet_item = QTreeWidgetItem(file_item)
+                sheet_item.setText(0, sheet_name)
+                sheet_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+                
+                # Store references to navigate to this sheet
+                sheet_item.file_name = file_name
+                sheet_item.sheet_name = sheet_name
+                
+                self.tree_items[f"{file_name}_{sheet_name}"] = sheet_item
+                
+                # Create the sheet widget
+                sheet_widget = self.create_sheet_widget(file_name, sheet_name, df)
+                widget_idx = self.sheet_stack.addWidget(sheet_widget)
+                self.sheet_widgets[f"{file_name}_{sheet_name}"] = widget_idx
+        
+        # Add a welcome widget as the first item in the stack
+        welcome_widget = QWidget()
+        welcome_layout = QVBoxLayout(welcome_widget)
+        welcome_label = QLabel(
+            "Select a sheet from the tree view on the left to view and select data columns."
+        )
+        welcome_label.setAlignment(Qt.AlignCenter)
+        welcome_layout.addWidget(welcome_label)
+        
+        # Insert it at the beginning of the stack
+        self.sheet_stack.insertWidget(0, welcome_widget)
+        
+    def create_sheet_widget(self, file_name, sheet_name, df):
+        """Create a widget for displaying sheet data and column selection"""
+        sheet_widget = QWidget()
+        sheet_layout = QVBoxLayout(sheet_widget)
+        
+        # Add file and sheet info at the top
+        info_label = QLabel(f"File: {file_name} | Sheet: {sheet_name}")
+        info_label.setStyleSheet("font-weight: bold; color: #336699;")
+        sheet_layout.addWidget(info_label)
+        
+        # Data preview
+        preview_group = QGroupBox("Data Preview")
+        preview_layout = QVBoxLayout()
+        
+        # Create table view
+        table_view = QTableView()
+        model = PandasTableModel(df.head(5))  # Show first 5 rows
+        table_view.setModel(model)
+        
+        # Set table properties
+        table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table_view.setAlternatingRowColors(True)
+        
+        preview_layout.addWidget(table_view)
+        preview_group.setLayout(preview_layout)
+        sheet_layout.addWidget(preview_group)
+        
+        # Column selection
+        selection_group = QGroupBox("Select Columns to Extract")
+        selection_layout = QVBoxLayout()
+        
+        # Buttons for select all/none
+        buttons_layout = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        deselect_all_btn = QPushButton("Deselect All")
+        
+        # Store references to these buttons with the file and sheet info
+        select_all_btn.file_name = file_name
+        select_all_btn.sheet_name = sheet_name
+        deselect_all_btn.file_name = file_name
+        deselect_all_btn.sheet_name = sheet_name
+        
+        select_all_btn.clicked.connect(self.select_all_columns)
+        deselect_all_btn.clicked.connect(self.deselect_all_columns)
+        
+        buttons_layout.addWidget(select_all_btn)
+        buttons_layout.addWidget(deselect_all_btn)
+        selection_layout.addLayout(buttons_layout)
+        
+        # Column checkboxes
+        scroll_widget = QWidget()
+        scroll_layout = QGridLayout(scroll_widget)
+        
+        # Make sure the selected_columns structure is initialized
+        if file_name not in self.selected_columns:
+            self.selected_columns[file_name] = {}
+        if sheet_name not in self.selected_columns[file_name]:
+            self.selected_columns[file_name][sheet_name] = []
+        
+        # Add checkboxes in a grid
+        columns = df.columns.tolist()
+        cols_per_row = 3
+        for i, col_name in enumerate(columns):
+            row = i // cols_per_row
+            col = i % cols_per_row
             
-            back_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(0))
-            next_btn.clicked.connect(self.check_selection_and_continue)
+            checkbox = QCheckBox(str(col_name))
             
-            nav_layout.addWidget(back_btn)
-            nav_layout.addWidget(next_btn)
-            file_layout.addLayout(nav_layout)
+            # Store column info in the checkbox
+            checkbox.file_name = file_name
+            checkbox.sheet_name = sheet_name
+            checkbox.column_name = col_name
+            
+            checkbox.stateChanged.connect(self.column_selection_changed)
+            scroll_layout.addWidget(checkbox, row, col)
+        
+        # Adjust grid layout
+        scroll_layout.setColumnStretch(0, 1)
+        scroll_layout.setColumnStretch(1, 1)
+        scroll_layout.setColumnStretch(2, 1)
+        
+        # Create scroll area for checkboxes
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(scroll_widget)
+        scroll_area.setWidgetResizable(True)
+        selection_layout.addWidget(scroll_area)
+        
+        selection_group.setLayout(selection_layout)
+        sheet_layout.addWidget(selection_group)
+        
+        return sheet_widget
+        
+    def on_tree_item_clicked(self, item, column):
+        """Handle tree view item click to display the corresponding sheet"""
+        # Only show sheet content if a sheet item is clicked (not a file)
+        if hasattr(item, 'file_name') and hasattr(item, 'sheet_name'):
+            # Find the sheet widget and display it
+            key = f"{item.file_name}_{item.sheet_name}"
+            if key in self.sheet_widgets:
+                self.sheet_stack.setCurrentIndex(self.sheet_widgets[key])
         
     def setup_output_tab(self):
         """Setup UI for the output tab"""
@@ -811,39 +898,34 @@ class ExcelExtractorApp(QMainWindow):
     
     def update_checkboxes_for_sheet(self, file_name, sheet_name):
         """Update all checkboxes for a specific sheet to match selection state"""
-        # Find the file tab
-        for i in range(self.selection_tab.count()):
-            if self.selection_tab.tabText(i) == file_name:
-                file_tab = self.selection_tab.widget(i)
+        # Find the sheet widget in our stacked widget
+        key = f"{file_name}_{sheet_name}"
+        if key in self.sheet_widgets:
+            widget_idx = self.sheet_widgets[key]
+            sheet_widget = self.sheet_stack.widget(widget_idx)
+            
+            # Find the QScrollArea in the second QGroupBox (column selection)
+            groups = sheet_widget.findChildren(QGroupBox)
+            if len(groups) >= 2:
+                selection_group = groups[1]  # Second group is selection
+                scroll_area = selection_group.findChild(QScrollArea)
                 
-                # Find the sheet tab within the file tab
-                sheet_tabs = file_tab.findChild(QTabWidget)
-                for j in range(sheet_tabs.count()):
-                    if sheet_tabs.tabText(j) == sheet_name:
-                        sheet_tab = sheet_tabs.widget(j)
-                        
-                        # Find the QScrollArea in the second QGroupBox
-                        groups = sheet_tab.findChildren(QGroupBox)
-                        selection_group = groups[1]  # Second group is selection
-                        scroll_area = selection_group.findChild(QScrollArea)
-                        scroll_widget = scroll_area.widget()
-                        
-                        # Update all checkboxes
-                        for checkbox in scroll_widget.findChildren(QCheckBox):
-                            if (hasattr(checkbox, 'file_name') and 
-                                hasattr(checkbox, 'sheet_name') and 
-                                hasattr(checkbox, 'column_name')):
-                                if (checkbox.file_name == file_name and 
-                                    checkbox.sheet_name == sheet_name):
-                                    # Block signals to prevent recursive calls
-                                    checkbox.blockSignals(True)
-                                    checkbox.setChecked(
-                                        checkbox.column_name in self.selected_columns[file_name][sheet_name]
-                                    )
-                                    checkbox.blockSignals(False)
-                        
-                        break
-                break
+                if scroll_area and scroll_area.widget():
+                    scroll_widget = scroll_area.widget()
+                    
+                    # Update all checkboxes
+                    for checkbox in scroll_widget.findChildren(QCheckBox):
+                        if (hasattr(checkbox, 'file_name') and 
+                            hasattr(checkbox, 'sheet_name') and 
+                            hasattr(checkbox, 'column_name')):
+                            if (checkbox.file_name == file_name and 
+                                checkbox.sheet_name == sheet_name):
+                                # Block signals to prevent recursive calls
+                                checkbox.blockSignals(True)
+                                checkbox.setChecked(
+                                    checkbox.column_name in self.selected_columns[file_name][sheet_name]
+                                )
+                                checkbox.blockSignals(False)
     
     def check_selection_and_continue(self):
         """Check if any columns are selected before continuing"""
