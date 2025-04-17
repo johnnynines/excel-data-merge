@@ -129,8 +129,8 @@ def read_excel_files(file_paths, log_callback=None):
             # Read each sheet and store its data
             for sheet_name in sheet_names:
                 try:
-                    # SIMPLIFIED APPROACH: Read the Excel sheet with the simplest method possible
-                    # Always grab the raw data first
+                    # IMPROVED APPROACH: Intelligently detect column headers
+                    # First grab the raw data without assuming header position
                     raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
                     
                     if log_callback:
@@ -142,16 +142,45 @@ def read_excel_files(file_paths, log_callback=None):
                             log_callback(f"Sheet '{sheet_name}' is completely empty, skipping")
                         continue
                     
-                    # IMPORTANT: Always create a working dataframe with the data, regardless of its structure
-                    # This ensures the data is accessible even with unusual formatting
+                    # Detect header row by checking for non-empty rows
+                    header_row = 0
+                    max_check_rows = min(10, len(raw_df))  # Look at most in the first 10 rows
                     
-                    # 1. Give generic column names
-                    column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
+                    # Look for the first non-empty row to use as headers
+                    for i in range(max_check_rows):
+                        # Check if this row has mostly non-null values
+                        row_values = raw_df.iloc[i].dropna()
+                        if len(row_values) > 0 and len(row_values) >= len(raw_df.columns) / 2:
+                            header_row = i
+                            if log_callback:
+                                log_callback(f"Found potential header row at index {header_row}")
+                            break
                     
-                    # 2. Create a dataframe with these columns, keeping ALL data
-                    df = pd.DataFrame(raw_df.values, columns=column_names)
+                    # Extract headers from the detected row
+                    if header_row > 0:
+                        if log_callback:
+                            log_callback(f"Using row {header_row+1} as header instead of first row")
+                        headers = raw_df.iloc[header_row].tolist()
+                        # Clean up headers - convert to strings and replace NaN with generic names
+                        headers = [f"Column_{i}" if pd.isna(h) else str(h).strip() for i, h in enumerate(headers)]
+                        
+                        # Create a dataframe with these headers, skipping the header row
+                        data_rows = list(range(0, header_row)) + list(range(header_row+1, len(raw_df)))
+                        df = pd.DataFrame(raw_df.iloc[data_rows].values, columns=headers)
+                        
+                        if log_callback:
+                            header_sample = ', '.join(headers[:min(5, len(headers))])
+                            if len(headers) > 5:
+                                header_sample += "..."
+                            log_callback(f"Found headers: {header_sample}")
+                    else:
+                        # No suitable header row found - use generic column names
+                        if log_callback:
+                            log_callback(f"Using generic column names (no clear header row found)")
+                        column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
+                        df = pd.DataFrame(raw_df.values, columns=column_names)
                     
-                    # 3. Store this dataframe even if it has blank rows - important to not lose data
+                    # Store this dataframe even if it has blank rows - important to not lose data
                     file_data[file_name][sheet_name] = df
                     
                     if log_callback:

@@ -338,52 +338,42 @@ class FileProcessorThread(QThread):
                 # Read each sheet and store its data
                 for sheet_name in sheet_names:
                     try:
-                        # IMPROVED APPROACH: Intelligently detect column headers
-                        # First grab the raw data without assuming header position
-                        raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
-                        
-                        self.progress_signal.emit(f"Raw sheet '{sheet_name}' has {len(raw_df)} rows and {len(raw_df.columns)} columns")
-                        
-                        # If dataframe is completely empty, skip it
-                        if raw_df.empty:
-                            self.progress_signal.emit(f"Sheet '{sheet_name}' is completely empty, skipping")
-                            continue
-                        
-                        # Detect header row by checking for non-empty rows
-                        header_row = 0
-                        max_check_rows = min(10, len(raw_df))  # Look at most in the first 10 rows
-                        
-                        # Look for the first non-empty row to use as headers
-                        for i in range(max_check_rows):
-                            # Check if this row has mostly non-null values
-                            row_values = raw_df.iloc[i].dropna()
-                            if len(row_values) > 0 and len(row_values) >= len(raw_df.columns) / 2:
-                                header_row = i
-                                self.progress_signal.emit(f"Found potential header row at index {header_row}")
-                                break
-                        
-                        # Extract headers from the detected row
-                        if header_row > 0:
-                            self.progress_signal.emit(f"Using row {header_row+1} as header instead of first row")
-                            headers = raw_df.iloc[header_row].tolist()
-                            # Clean up headers - convert to strings and replace NaN with generic names
-                            headers = [f"Column_{i}" if pd.isna(h) else str(h).strip() for i, h in enumerate(headers)]
+                        # We've moved this logic to the shared file_processor.py module
+                        # Let the shared functionality handle Excel processing
+                        try:
+                            from file_processor import read_excel_files
                             
-                            # Create a dataframe with these headers, skipping the header row
-                            data_rows = list(range(0, header_row)) + list(range(header_row+1, len(raw_df)))
-                            df = pd.DataFrame(raw_df.iloc[data_rows].values, columns=headers)
+                            # Create a temporary dict just for this file/sheet
+                            temp_excel_file = {file_name: {}}
                             
-                            # Log the headers we found
-                            self.progress_signal.emit(f"Found headers: {', '.join(headers[:min(5, len(headers))])}" + 
-                                                    ("..." if len(headers) > 5 else ""))
-                        else:
-                            # No suitable header row found - use generic column names
-                            self.progress_signal.emit(f"Using generic column names (no clear header row found)")
+                            # Read this sheet using the shared logic
+                            self.progress_signal.emit(f"Using enhanced header detection for {sheet_name}")
+                            
+                            # Process the sheet through the shared processor
+                            temp_excel_file[file_name][sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+                            
+                            # Process this file with our improved shared header detection
+                            result = read_excel_files([excel_file], lambda msg: self.progress_signal.emit(msg))
+                            
+                            # If processing was successful, copy the processed sheet
+                            if file_name in result and sheet_name in result[file_name]:
+                                df = result[file_name][sheet_name]
+                                file_data[file_name][sheet_name] = df
+                            else:
+                                # Fallback if something went wrong
+                                self.progress_signal.emit(f"Could not process sheet through enhanced detection, using basic process")
+                                raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+                                column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
+                                df = pd.DataFrame(raw_df.values, columns=column_names)
+                                file_data[file_name][sheet_name] = df
+                                
+                        except Exception as e:
+                            # If there's any issue, fall back to basic processing
+                            self.progress_signal.emit(f"Error using enhanced header detection: {str(e)}")
+                            raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
                             column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
                             df = pd.DataFrame(raw_df.values, columns=column_names)
-                        
-                        # Store this dataframe even if it has blank rows - important to not lose data
-                        file_data[file_name][sheet_name] = df
+                            file_data[file_name][sheet_name] = df
                         
                         self.progress_signal.emit(f"Successfully processed sheet '{sheet_name}' with {len(df)} rows and {len(df.columns)} columns")
                     except Exception as e:
@@ -654,11 +644,17 @@ class ExcelExtractorApp(QMainWindow):
         """Setup UI for the data selection tab based on loaded files using a tree view"""
         # Create a new widget for the selection tab
         selection_widget = QWidget()
-        selection_layout = QHBoxLayout(selection_widget)
+        
+        # Create main layout for the selection tab
+        selection_layout = QVBoxLayout(selection_widget)
+        
+        # Main content area widget (will contain tree and sheet stack)
+        content_widget = QWidget()
+        content_layout = QHBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
         
         # Create a splitter for the tree view and content area
         splitter = QSplitter(Qt.Horizontal)
-        selection_layout.addWidget(splitter)
         
         # Create tree view for file and sheet navigation
         self.tree_view = QTreeWidget()
@@ -677,6 +673,32 @@ class ExcelExtractorApp(QMainWindow):
         # Set initial splitter sizes
         splitter.setSizes([250, 650])
         
+        # Add splitter to the content layout
+        content_layout.addWidget(splitter)
+        
+        # Add the content widget to the main layout
+        selection_layout.addWidget(content_widget)
+        
+        # Create the navigation buttons layout at the bottom
+        button_layout = QHBoxLayout()
+        
+        # Add spacer to push buttons to the right side
+        button_layout.addStretch()
+        
+        # Create the navigation buttons
+        back_btn = QPushButton("Back to Upload")
+        next_btn = QPushButton("Continue to Output")
+        
+        back_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(0))
+        next_btn.clicked.connect(self.check_selection_and_continue)
+        
+        # Add buttons to the layout
+        button_layout.addWidget(back_btn)
+        button_layout.addWidget(next_btn)
+        
+        # Add the button layout to the bottom of the main layout
+        selection_layout.addLayout(button_layout)
+        
         # Clear any existing content
         if hasattr(self, 'selection_tab') and isinstance(self.selection_tab, QWidget):
             # If selection_tab is a QTabWidget, just replace it
@@ -686,24 +708,6 @@ class ExcelExtractorApp(QMainWindow):
             self.selection_tab = selection_widget
             self.tabs.removeTab(1)
             self.tabs.insertTab(1, self.selection_tab, "2. Select Data")
-        
-        # Add navigation buttons at the bottom
-        nav_layout = QHBoxLayout()
-        back_btn = QPushButton("Back to Upload")
-        next_btn = QPushButton("Continue to Output")
-        
-        back_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(0))
-        next_btn.clicked.connect(self.check_selection_and_continue)
-        
-        nav_layout.addWidget(back_btn)
-        nav_layout.addWidget(next_btn)
-        
-        # Add navigation buttons at the bottom of the layout
-        bottom_widget = QWidget()
-        bottom_widget.setLayout(nav_layout)
-        selection_layout.addWidget(bottom_widget)
-        selection_layout.setStretch(0, 1)  # Make the splitter expand
-        selection_layout.setStretch(1, 0)  # Keep the navigation buttons at their preferred size
         
         # Populate the tree view with files and sheets
         self.populate_tree_view(file_data)
