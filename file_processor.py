@@ -359,7 +359,9 @@ def process_and_merge_data(file_data, selected_columns, output_path, log_callbac
                 if cols:  # Only include sheets where columns were selected
                     summary.write(row, 0, file_name)
                     summary.write(row, 1, sheet_name)
-                    summary.write(row, 2, ", ".join(cols))
+                    # Convert all column names to strings before joining
+                    cols_str = [str(col) for col in cols]
+                    summary.write(row, 2, ", ".join(cols_str))
                     row += 1
         
         # Save the workbook

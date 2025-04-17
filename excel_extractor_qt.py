@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QCheckBox, QGroupBox, QScrollArea, QGridLayout,
     QLineEdit, QTableView, QHeaderView, QSplitter, QFrame, QStyle,
     QTreeWidget, QTreeWidgetItem, QStackedWidget, QComboBox, QDialog,
-    QMenuBar, QMenu, QAction, QSizePolicy
+    QMenuBar, QMenu, QAction, QSizePolicy, QInputDialog
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSize
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
@@ -617,36 +617,6 @@ class ExcelExtractorApp(QMainWindow):
         instruction_label.setWordWrap(True)
         layout.addWidget(instruction_label)
         
-        # Add profile management if supported
-        if PROFILE_SUPPORT and self.profile_manager:
-            profile_group = QGroupBox("Extraction Profiles")
-            profile_layout = QVBoxLayout()
-            
-            profile_info = QLabel(
-                "Profiles allow you to save column selections for repeated extraction tasks.\n"
-                "You can create profiles based on your current selections or load existing profiles."
-            )
-            profile_info.setWordWrap(True)
-            profile_layout.addWidget(profile_info)
-            
-            # Profile buttons
-            profile_btn_layout = QHBoxLayout()
-            
-            self.manage_profiles_btn = QPushButton("Manage Profiles")
-            self.manage_profiles_btn.clicked.connect(self.open_profile_manager)
-            profile_btn_layout.addWidget(self.manage_profiles_btn)
-            
-            # Add default profile dropdown if we have profiles
-            if self.profile_manager.get_all_profiles():
-                profile_btn_layout.addWidget(QLabel("Default Profile:"))
-                self.profile_combo = QComboBox()
-                self.update_profile_combo()
-                profile_btn_layout.addWidget(self.profile_combo)
-            
-            profile_layout.addLayout(profile_btn_layout)
-            profile_group.setLayout(profile_layout)
-            layout.addWidget(profile_group)
-        
         # MacOS Tips
         tips_group = QGroupBox("MacOS Tips")
         tips_layout = QVBoxLayout()
@@ -733,6 +703,49 @@ class ExcelExtractorApp(QMainWindow):
         
         # Add the content widget to the main layout
         selection_layout.addWidget(content_widget)
+        
+        # Add profile management if supported (moved from upload tab to here)
+        if PROFILE_SUPPORT and self.profile_manager:
+            profile_group = QGroupBox("Extraction Profiles")
+            profile_layout = QVBoxLayout()
+            
+            profile_info = QLabel(
+                "Profiles allow you to save your column selections or apply existing profiles to the data."
+            )
+            profile_info.setWordWrap(True)
+            profile_layout.addWidget(profile_info)
+            
+            # Profile buttons
+            profile_btn_layout = QHBoxLayout()
+            
+            # Manage profiles button
+            self.manage_profiles_btn = QPushButton("Manage Profiles")
+            self.manage_profiles_btn.clicked.connect(self.open_profile_manager)
+            profile_btn_layout.addWidget(self.manage_profiles_btn)
+            
+            # Add apply profile dropdown
+            profile_btn_layout.addWidget(QLabel("Apply Profile:"))
+            self.profile_combo = QComboBox()
+            self.update_profile_combo()
+            self.profile_combo.setMinimumWidth(150)
+            profile_btn_layout.addWidget(self.profile_combo)
+            
+            # Add apply button
+            apply_profile_btn = QPushButton("Apply")
+            apply_profile_btn.clicked.connect(self.apply_selected_profile)
+            profile_btn_layout.addWidget(apply_profile_btn)
+            
+            # Add save selection button
+            save_selection_btn = QPushButton("Save Current Selection as Profile")
+            save_selection_btn.clicked.connect(self.save_current_selection)
+            profile_btn_layout.addWidget(save_selection_btn)
+            
+            # Add stretch to push everything to the left
+            profile_btn_layout.addStretch()
+            
+            profile_layout.addLayout(profile_btn_layout)
+            profile_group.setLayout(profile_layout)
+            selection_layout.addWidget(profile_group)
         
         # Create the navigation buttons layout at the bottom
         button_layout = QHBoxLayout()
@@ -1648,6 +1661,46 @@ def on_profiles_updated(self):
     if hasattr(self, 'profile_combo'):
         self.update_profile_combo()
 
+def apply_selected_profile(self):
+    """Apply the selected profile from the dropdown"""
+    if not self.profile_combo or self.profile_combo.count() == 0:
+        return
+        
+    profile_name = self.profile_combo.currentText()
+    profile = self.profile_manager.get_profile(profile_name)
+    if profile:
+        self.apply_profile(profile)
+
+def save_current_selection(self):
+    """Save the current column selection as a new profile"""
+    if not hasattr(self, 'file_data') or not self.selected_columns:
+        QMessageBox.warning(self, "No Selection", 
+                           "Please select at least one column before saving a profile.")
+        return
+        
+    profile_name, ok = QInputDialog.getText(self, "New Profile", 
+                                          "Enter a name for this profile:")
+    if not ok or not profile_name:
+        return
+        
+    # Create a new profile
+    profile = self.profile_manager.create_profile(profile_name)
+    
+    # Add current selections to the profile
+    for file_name, sheets in self.selected_columns.items():
+        for sheet_name, columns in sheets.items():
+            profile.add_file_selection(file_name, sheet_name, columns)
+    
+    # Save the profile
+    if self.profile_manager.save_profile(profile):
+        # Update the dropdown
+        self.update_profile_combo()
+        QMessageBox.information(self, "Profile Saved", 
+                               f"Profile '{profile_name}' has been saved.")
+    else:
+        QMessageBox.warning(self, "Save Failed", 
+                           f"Failed to save profile '{profile_name}'.")
+
 def apply_profile(self, profile):
     """Apply a profile to the current data"""
     if not profile or not self.file_data:
@@ -1709,6 +1762,8 @@ ExcelExtractorApp.open_profile_manager = open_profile_manager
 ExcelExtractorApp.on_profiles_updated = on_profiles_updated
 ExcelExtractorApp.apply_profile = apply_profile
 ExcelExtractorApp.update_checkboxes_for_current_sheet = update_checkboxes_for_current_sheet
+ExcelExtractorApp.apply_selected_profile = apply_selected_profile
+ExcelExtractorApp.save_current_selection = save_current_selection
 
 def main():
     # Set macOS-specific application attributes
