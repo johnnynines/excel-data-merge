@@ -96,11 +96,11 @@ class PandasTableModel(QAbstractTableModel):
             except (IndexError, KeyError):
                 return ""
         
-        # Add styling for alternate rows
-        if role == Qt.BackgroundRole:
-            if index.row() % 2 == 0:
-                # Light background for even rows
-                return QColor(248, 248, 248)
+        # No alternating row colors per user request
+        # if role == Qt.BackgroundRole:
+        #    if index.row() % 2 == 0:
+        #        # Light background for even rows
+        #        return QColor(248, 248, 248)
         
         return None
 
@@ -887,6 +887,25 @@ class ExcelExtractorApp(QMainWindow):
         # Set table properties
         table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         table_view.setAlternatingRowColors(False)  # Turn off alternating colors per user request
+        
+        # Apply style sheet to ensure a clean look with no alternating colors
+        table_view.setStyleSheet("""
+            QTableView {
+                gridline-color: #d0d0d0;
+                background-color: white;
+                alternate-background-color: white;  /* Force same color for alternate rows */
+            }
+            QTableView::item {
+                border: 0px;
+                padding: 5px;
+                background-color: white;
+            }
+            QHeaderView::section {
+                background-color: #f0f0f0;
+                padding: 4px;
+                border: 1px solid #d0d0d0;
+            }
+        """)
         
         preview_layout.addWidget(table_view)
         preview_group.setLayout(preview_layout)
