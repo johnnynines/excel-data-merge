@@ -1,13 +1,18 @@
 # Excel Data Extractor
 
-A MacOS application for extracting and merging selected data from multiple Excel files contained in a zip archive.
+A native macOS application for extracting and merging selected data from multiple Excel files contained in a ZIP archive.
+
+![Excel Data Extractor Screenshot](attached_assets/Screenshot%20Excel%20Data%20Extractor%20250416%2021-22-27.png)
+
+> **Note**: This application is designed specifically for macOS and features a native interface. The PyQt5 implementation provides superior macOS integration with proper dark mode support and Retina display compatibility.
 
 ## Overview
 
-This repository contains two implementations of the Excel Data Extractor:
+This repository contains three implementations of the Excel Data Extractor:
 
-1. **wxPython Desktop Application** (`excel_extractor_wx.py`) - A native MacOS desktop application with a graphical user interface, optimized specifically for MacOS
+1. **PyQt5 Desktop Application** (`excel_extractor_qt.py`) - A native macOS desktop application with a graphical user interface, optimized specifically for macOS with proper dark mode support and Retina display compatibility
 2. **Command-Line Version** (`excel_extractor_cli.py`) - A command-line interface for batch processing or script integration
+3. **wxPython Desktop Application** (`excel_extractor_wx.py`) - Alternative implementation using wxPython (deprecated, kept for reference)
 
 The application allows you to:
 - Extract Excel files from a ZIP archive
@@ -20,7 +25,7 @@ The application allows you to:
 
 - macOS 10.12 or higher
 - Python 3.6 or higher
-- wxPython
+- PyQt5 (for GUI version)
 - pandas
 - xlwt
 - openpyxl
@@ -31,7 +36,7 @@ The application allows you to:
 2. Install the required dependencies:
 
 ```bash
-pip install wxPython pandas xlwt openpyxl
+pip install PyQt5 pandas xlwt openpyxl
 ```
 
 ## Detailed Installation & Usage Instructions for macOS
@@ -65,15 +70,21 @@ pip install wxPython pandas xlwt openpyxl
 ### Step 4: Install Dependencies
 Install all required packages:
 ```bash
-pip install wxPython pandas xlwt openpyxl
+pip install PyQt5 pandas xlwt openpyxl
 ```
 
 ### Step 5: Run the Application
 
-#### GUI Version (wxPython)
+#### GUI Version (PyQt5)
 Launch the GUI application with:
 ```bash
-python excel_extractor_wx.py
+python excel_extractor_qt.py
+```
+
+#### Alternative Launch Method
+You can also use the app.py launcher, which will automatically select the best version for your system:
+```bash
+python app.py
 ```
 
 #### Command-Line Version
@@ -131,14 +142,18 @@ The command-line version follows this workflow:
    - An output Excel file is created at the specified path
    - A summary of the process is shown
 
-## MacOS Optimizations
+## macOS Optimizations
 
-This application is optimized for MacOS with:
+This application is optimized for macOS with:
 
-- Native file dialogs in the GUI version
-- Proper handling of MacOS file paths
-- Compatible with MacOS system themes and styles
+- Native macOS look and feel using PyQt5
+- Dark mode support with automatic adaptation to system preferences
+- Retina display compatibility with high-DPI scaling
+- Native file dialogs for familiar user experience
+- Proper handling of macOS file paths
+- Compatible with macOS system themes and styles
 - Appropriate handling of temporary directories
+- MacOS application identity and document associations
 
 ## Troubleshooting
 
@@ -151,8 +166,20 @@ If you encounter issues:
 
 ### Common Issues and Solutions
 
-#### wxPython Installation Problems
-If you have trouble installing wxPython, try:
+#### PyQt5 Installation Issues
+If you have trouble installing PyQt5, try:
+```bash
+pip install --upgrade pip
+pip install PyQt5
+```
+
+For macOS, you might need to install Qt dependencies using Homebrew:
+```bash
+brew install qt
+```
+
+#### wxPython Installation Problems (Alternative GUI)
+If you want to try the alternative wxPython version and have installation issues:
 ```bash
 pip install -U wxPython
 ```
