@@ -91,9 +91,9 @@ class ExcelExtractorFrame(wx.Frame):
         self.notebook.AddPage(self.selection_tab, "2. Select Data")
         self.notebook.AddPage(self.output_tab, "3. Generate Output")
         
-        # Disable tabs until they're ready
-        self.notebook.EnablePage(1, False)
-        self.notebook.EnablePage(2, False)
+        # Disable tabs until they're ready (compatible with all wxPython versions)
+        self.notebook.SetSelection(0)  # Start with the first tab
+        # We'll handle tab enabling/disabling in the code by changing pages programmatically
         
         # Create the UI for each tab
         self.create_upload_tab()
@@ -522,8 +522,7 @@ class ExcelExtractorFrame(wx.Frame):
             # Create the dynamic selection UI
             wx.CallAfter(self.create_dynamic_selection_ui)
             
-            # Enable the selection tab and switch to it
-            wx.CallAfter(self.notebook.EnablePage, 1, True)
+            # Switch to the selection tab (no need to explicitly enable in newer wxPython)
             wx.CallAfter(self.notebook.SetSelection, 1)
             
             # Update the status
@@ -781,8 +780,7 @@ class ExcelExtractorFrame(wx.Frame):
             )
             return
         
-        # Enable the output tab and switch to it
-        self.notebook.EnablePage(2, True)
+        # Switch to the output tab (no need to explicitly enable in newer wxPython)
         self.notebook.SetSelection(2)
     
     def on_generate_output(self, event):
@@ -1010,10 +1008,7 @@ class ExcelExtractorFrame(wx.Frame):
         self.output_log_text.Clear()
         self.location_picker.SetPath("")
         
-        # Reset tab states
-        self.notebook.EnablePage(0, True)
-        self.notebook.EnablePage(1, False)
-        self.notebook.EnablePage(2, False)
+        # Reset to the first tab (upload)
         self.notebook.SetSelection(0)
         
         # Clean up temporary directory
