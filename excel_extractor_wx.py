@@ -18,6 +18,9 @@ import wx.lib.scrolledpanel as scrolled
 import wx.lib.agw.multidirdialog as MDD
 import threading
 
+# Force light mode for the application (needed for dark mode macOS)
+os.environ['PYOPENGL_PLATFORM'] = 'egl'  # Prevent dark mode issues with OpenGL
+
 # Constants
 APP_NAME = "Excel Data Extractor"
 APP_VERSION = "1.0.0"
@@ -72,18 +75,24 @@ class ExcelExtractorFrame(wx.Frame):
     
     def create_ui(self):
         """Create the main user interface"""
-        # Create a panel for the UI
+        # Create a panel for the UI with light background (for macOS dark mode compatibility)
         self.panel = wx.Panel(self)
+        self.panel.SetBackgroundColour(wx.WHITE)
         
-        # Create a notebook for the tabs
+        # Create a notebook for the tabs with visible styling
         self.notebook = wx.Notebook(self.panel)
         
-        # Create the tabs
+        # Create the tabs with light background
         self.upload_tab = wx.Panel(self.notebook)
-        self.selection_tab = wx.Panel(self.notebook)
-        self.output_tab = wx.Panel(self.notebook)
+        self.upload_tab.SetBackgroundColour(wx.WHITE)
         
-        # Add the tabs to the notebook
+        self.selection_tab = wx.Panel(self.notebook)
+        self.selection_tab.SetBackgroundColour(wx.WHITE)
+        
+        self.output_tab = wx.Panel(self.notebook)
+        self.output_tab.SetBackgroundColour(wx.WHITE)
+        
+        # Add the tabs to the notebook with clear labels
         self.notebook.AddPage(self.upload_tab, "1. Upload ZIP")
         self.notebook.AddPage(self.selection_tab, "2. Select Data")
         self.notebook.AddPage(self.output_tab, "3. Generate Output")
@@ -106,9 +115,11 @@ class ExcelExtractorFrame(wx.Frame):
         heading_font.SetPointSize(16)
         heading_font.SetWeight(wx.FONTWEIGHT_BOLD)
         heading.SetFont(heading_font)
+        heading.SetForegroundColour(wx.BLACK)  # Ensure visible text in dark mode
         
         # Add a description
         description = wx.StaticText(self.panel, label="Extract and merge data from multiple Excel files in a ZIP archive")
+        description.SetForegroundColour(wx.BLACK)  # Ensure visible text in dark mode
         
         # Add elements to the sizer
         panel_sizer.Add(heading, 0, wx.ALIGN_CENTER | wx.TOP, 10)
