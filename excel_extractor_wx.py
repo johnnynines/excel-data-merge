@@ -187,6 +187,7 @@ class ExcelExtractorFrame(wx.Frame):
             self.selection_tab, 
             label="Data selection will be available after processing a ZIP file"
         )
+        self.selection_placeholder.SetForegroundColour(wx.BLACK)  # Ensure visible text in dark mode
         selection_sizer.Add(self.selection_placeholder, 1, wx.ALIGN_CENTER)
         
         # The actual selection UI will be created dynamically after processing a ZIP file
@@ -204,11 +205,13 @@ class ExcelExtractorFrame(wx.Frame):
             self.output_tab, 
             label="Enter a name for the output Excel file and select where to save it.\nClick 'Process and Generate' to create the merged Excel file."
         )
+        instructions.SetForegroundColour(wx.BLACK)  # Ensure visible text in dark mode
         output_sizer.Add(instructions, 0, wx.ALL, 10)
         
         # Add filename input
         name_sizer = wx.BoxSizer(wx.HORIZONTAL)
         name_label = wx.StaticText(self.output_tab, label="Output filename:")
+        name_label.SetForegroundColour(wx.BLACK)  # Ensure visible text in dark mode
         self.output_name = wx.TextCtrl(self.output_tab, value="merged_data")
         name_sizer.Add(name_label, 0, wx.ALIGN_CENTER_VERTICAL | wx.RIGHT, 5)
         name_sizer.Add(self.output_name, 1, wx.EXPAND)
@@ -217,6 +220,7 @@ class ExcelExtractorFrame(wx.Frame):
         # Add location picker
         location_sizer = wx.BoxSizer(wx.HORIZONTAL)
         location_label = wx.StaticText(self.output_tab, label="Save location:")
+        location_label.SetForegroundColour(wx.BLACK)  # Ensure visible text in dark mode
         self.location_picker = wx.DirPickerCtrl(
             self.output_tab,
             style=wx.DIRP_USE_TEXTCTRL | wx.DIRP_DIR_MUST_EXIST
@@ -394,6 +398,7 @@ class ExcelExtractorFrame(wx.Frame):
         
         # Add a status line showing total selected columns
         self.selection_status = wx.StaticText(self.selection_tab, label="Total columns selected: 0")
+        self.selection_status.SetForegroundColour(wx.BLACK)  # Ensure visible text in dark mode
         selection_sizer.Add(self.selection_status, 0, wx.ALL, 10)
         
         # Set the sizer for the selection tab
