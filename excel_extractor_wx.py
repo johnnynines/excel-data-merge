@@ -51,10 +51,7 @@ class ExcelExtractorFrame(wx.Frame):
     def configure_for_macos(self):
         """Configure the application specifically for MacOS"""
         if 'darwin' in sys.platform:
-            # Set the application name for the menu bar
-            wx.App.SetMacAppMenu(None)
-            
-            # Menu handling for MacOS
+            # Create menu bar for MacOS
             menubar = wx.MenuBar()
             file_menu = wx.Menu()
             
