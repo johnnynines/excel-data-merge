@@ -234,26 +234,32 @@ def detect_descriptive_column_names(df, log_callback=None):
         
     # Process each column to find the first non-empty string
     for col in df.columns:
-        # Default to the original column name
-        descriptive_names[col] = col
+        # Default to the original column name (ensure it's a string)
+        col_str = str(col)
+        descriptive_names[col] = col_str
         
-        # Get non-empty string values from this column (but only consider the first 20 rows for efficiency)
-        sample_size = min(20, len(df))
-        sample = df[col].head(sample_size)
-        
-        # Look for the first non-empty string value that is not just a number
-        for value in sample:
-            if pd.notna(value) and isinstance(value, str) and value.strip() and not value.strip().isdigit():
-                # Clean up the value to use as a header (max 30 chars to stay readable)
-                desc_name = str(value).strip()
-                # Truncate if too long, but preserve meaningful content
-                if len(desc_name) > 30:
-                    desc_name = desc_name[:27] + "..."
-                
-                # Only use it if it's better than a generic column name
-                if not col.startswith("Column_") or len(desc_name) > 0:
-                    descriptive_names[col] = desc_name
-                break
+        try:
+            # Get non-empty string values from this column (but only consider the first 20 rows for efficiency)
+            sample_size = min(20, len(df))
+            sample = df[col].head(sample_size)
+            
+            # Look for the first non-empty string value that is not just a number
+            for value in sample:
+                if pd.notna(value) and isinstance(value, str) and value.strip() and not value.strip().isdigit():
+                    # Clean up the value to use as a header (max 30 chars to stay readable)
+                    desc_name = str(value).strip()
+                    # Truncate if too long, but preserve meaningful content
+                    if len(desc_name) > 30:
+                        desc_name = desc_name[:27] + "..."
+                    
+                    # Only use it if it's better than a generic column name
+                    is_generic = isinstance(col_str, str) and col_str.startswith("Column_")
+                    if not is_generic or len(desc_name) > 0:
+                        descriptive_names[col] = desc_name
+                    break
+        except Exception as e:
+            if log_callback:
+                log_callback(f"Error detecting descriptive name for column {col}: {str(e)}")
                 
     if log_callback:
         log_callback(f"Detected {len(descriptive_names)} descriptive column names")

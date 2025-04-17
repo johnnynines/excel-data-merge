@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QCheckBox, QGroupBox, QScrollArea, QGridLayout,
     QLineEdit, QTableView, QHeaderView, QSplitter, QFrame, QStyle,
     QTreeWidget, QTreeWidgetItem, QStackedWidget, QComboBox, QDialog,
-    QMenuBar, QMenu, QAction
+    QMenuBar, QMenu, QAction, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSize
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
