@@ -9,6 +9,7 @@ import pandas as pd
 from zipfile import ZipFile
 import xlwt
 import tempfile
+import re
 
 def extract_zip_file(zip_path, extract_dir, log_callback=None):
     """
@@ -212,6 +213,52 @@ def read_excel_files(file_paths, log_callback=None):
             log_callback("Could not read any data from the Excel files")
     
     return file_data
+
+def detect_descriptive_column_names(df, log_callback=None):
+    """
+    Detects more descriptive column names by finding the first non-empty string value in each column.
+    Used to provide more meaningful headers in the UI.
+    
+    Parameters:
+    - df: pandas DataFrame to analyze
+    - log_callback: Optional callback function for logging
+    
+    Returns:
+    - Dictionary mapping original column names to detected descriptive names
+    """
+    descriptive_names = {}
+    
+    # Skip if DataFrame is empty
+    if df is None or df.empty:
+        return descriptive_names
+        
+    # Process each column to find the first non-empty string
+    for col in df.columns:
+        # Default to the original column name
+        descriptive_names[col] = col
+        
+        # Get non-empty string values from this column (but only consider the first 20 rows for efficiency)
+        sample_size = min(20, len(df))
+        sample = df[col].head(sample_size)
+        
+        # Look for the first non-empty string value that is not just a number
+        for value in sample:
+            if pd.notna(value) and isinstance(value, str) and value.strip() and not value.strip().isdigit():
+                # Clean up the value to use as a header (max 30 chars to stay readable)
+                desc_name = str(value).strip()
+                # Truncate if too long, but preserve meaningful content
+                if len(desc_name) > 30:
+                    desc_name = desc_name[:27] + "..."
+                
+                # Only use it if it's better than a generic column name
+                if not col.startswith("Column_") or len(desc_name) > 0:
+                    descriptive_names[col] = desc_name
+                break
+                
+    if log_callback:
+        log_callback(f"Detected {len(descriptive_names)} descriptive column names")
+        
+    return descriptive_names
 
 def process_and_merge_data(file_data, selected_columns, output_path, log_callback=None):
     """

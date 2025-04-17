@@ -53,10 +53,24 @@ def interactive_column_selection(file_data):
             for line in preview.split('\n'):
                 print(f"  {line}")
             
-            # Display column options
-            print("\n  Available columns:")
-            for i, col in enumerate(df.columns):
-                print(f"  {i+1}: {col}")
+            # Get descriptive column names for better display
+            try:
+                from file_processor import detect_descriptive_column_names
+                descriptive_names = detect_descriptive_column_names(df)
+                
+                # Display column options with descriptive names
+                print("\n  Available columns:")
+                for i, col in enumerate(df.columns):
+                    desc_name = descriptive_names.get(col, col)
+                    if desc_name != col and not col.startswith("Column_"):
+                        print(f"  {i+1}: {desc_name} ({col})")
+                    else:
+                        print(f"  {i+1}: {desc_name}")
+            except ImportError:
+                # Fall back to original behavior if function not available
+                print("\n  Available columns:")
+                for i, col in enumerate(df.columns):
+                    print(f"  {i+1}: {col}")
             
             # Ask for column selections
             while True:

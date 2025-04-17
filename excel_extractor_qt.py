@@ -511,6 +511,7 @@ class ExcelExtractorApp(QMainWindow):
         # Initialize instance variables
         self.file_data = {}
         self.selected_columns = {}
+        self.descriptive_column_names = {}  # Store descriptive names for columns
         self.temp_dir = None
         self.output_path = None
         
@@ -831,6 +832,21 @@ class ExcelExtractorApp(QMainWindow):
         info_label.setStyleSheet("font-weight: bold; color: #336699;")
         sheet_layout.addWidget(info_label)
         
+        # Get descriptive column names from the first non-empty string in each column
+        # (This feature can later be made configurable in settings)
+        try:
+            from file_processor import detect_descriptive_column_names
+            descriptive_names = detect_descriptive_column_names(df, lambda msg: print(f"Column names: {msg}"))
+            # Store these descriptive names for later use
+            sheet_key = f"{file_name}_{sheet_name}"
+            if not hasattr(self, 'descriptive_column_names'):
+                self.descriptive_column_names = {}
+            self.descriptive_column_names[sheet_key] = descriptive_names
+            print(f"Found {len(descriptive_names)} descriptive column names for {sheet_key}")
+        except Exception as e:
+            print(f"Error detecting descriptive column names: {str(e)}")
+            descriptive_names = {col: col for col in df.columns}  # Default to original names
+        
         # Data preview
         preview_group = QGroupBox("Data Preview")
         preview_layout = QVBoxLayout()
@@ -847,8 +863,14 @@ class ExcelExtractorApp(QMainWindow):
                 preview_rows = min(10, len(df))
                 sample_df = df.head(preview_rows)
                 
-                # Create the model with the raw data exactly as it was read
-                model = PandasTableModel(sample_df)
+                # Create a copy of the sample with descriptive column names for display purposes
+                display_df = sample_df.copy()
+                # Rename columns to use descriptive names - but only in the display copy
+                if descriptive_names:
+                    display_df.columns = [descriptive_names.get(col, col) for col in display_df.columns]
+                
+                # Create the model with the display data (enhanced column names)
+                model = PandasTableModel(display_df)
                 
                 # Add informative status message
                 total_rows = len(df)
@@ -909,6 +931,11 @@ class ExcelExtractorApp(QMainWindow):
         selection_group = QGroupBox("Select Columns to Extract")
         selection_layout = QVBoxLayout()
         
+        # Add a note about the descriptive column names
+        desc_note = QLabel("Note: Showing descriptive labels from data values for easier identification")
+        desc_note.setStyleSheet("color: #666; font-style: italic; font-size: 10px;")
+        selection_layout.addWidget(desc_note)
+        
         # Buttons for select all/none
         buttons_layout = QHBoxLayout()
         select_all_btn = QPushButton("Select All")
@@ -944,12 +971,24 @@ class ExcelExtractorApp(QMainWindow):
             row = i // cols_per_row
             col = i % cols_per_row
             
-            checkbox = QCheckBox(str(col_name))
+            # Get the descriptive name for display, original for data
+            display_name = descriptive_names.get(col_name, str(col_name))
             
-            # Store column info in the checkbox
+            # Use both the original column name and descriptive name in the checkbox label
+            if display_name != col_name and not col_name.startswith("Column_"):
+                # Show both if they're different and if the original isn't just a generic name
+                label_text = f"{display_name} ({col_name})"
+            else:
+                # Otherwise just show the descriptive name
+                label_text = display_name
+                
+            checkbox = QCheckBox(label_text)
+            
+            # Store column info in the checkbox - keep original name for data processing
             checkbox.file_name = file_name
             checkbox.sheet_name = sheet_name
-            checkbox.column_name = col_name
+            checkbox.column_name = col_name  # Original column name (technical)
+            checkbox.display_name = display_name  # Descriptive name (user-friendly)
             
             checkbox.stateChanged.connect(self.column_selection_changed)
             scroll_layout.addWidget(checkbox, row, col)
