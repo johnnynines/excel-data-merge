@@ -1,29 +1,41 @@
-#!/usr/bin/env python3
 """
 Excel Data Extractor - PyQt5 macOS Application
 This application extracts and merges selected data from multiple Excel files in a ZIP archive.
 Optimized specifically for macOS with native look and feel.
 """
 
-import sys
 import os
+import sys
 import tempfile
-import pandas as pd
 import zipfile
+import shutil
+import logging
 from pathlib import Path
-import xlwt
 
-# Qt integration settings are now in the main() function for better organization
+import pandas as pd
+import numpy as np
+import xlwt
+import openpyxl
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QMessageBox, QProgressBar,
     QTabWidget, QCheckBox, QGroupBox, QScrollArea, QGridLayout,
     QLineEdit, QTableView, QHeaderView, QSplitter, QFrame, QStyle,
-    QTreeWidget, QTreeWidgetItem, QStackedWidget
+    QTreeWidget, QTreeWidgetItem, QStackedWidget, QComboBox, QDialog,
+    QMenuBar, QMenu, QAction
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSize
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
+
+# Import profile management
+try:
+    from profile_manager import ProfileManager, ExtractionProfile
+    from profile_dialog import ProfileDialog
+    PROFILE_SUPPORT = True
+except ImportError:
+    print("Profile management modules not found, profile support will be disabled")
+    PROFILE_SUPPORT = False
 
 # Model for displaying Excel data in a table
 class PandasTableModel(QAbstractTableModel):
@@ -349,53 +361,41 @@ class FileProcessorThread(QThread):
                             temp_excel_file[file_name][sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
                             
                             # Process this file with our improved shared header detection
-                            result = read_excel_files([excel_file], lambda msg: self.progress_signal.emit(msg))
+                            from file_processor import detect_descriptive_column_names
+                            self.progress_signal.emit(f"Performing advanced header detection for {sheet_name}")
                             
-                            # If processing was successful, copy the processed sheet
-                            if file_name in result and sheet_name in result[file_name]:
-                                df = result[file_name][sheet_name]
-                                file_data[file_name][sheet_name] = df
-                            else:
-                                # Fallback if something went wrong
-                                self.progress_signal.emit(f"Could not process sheet through enhanced detection, using basic process")
-                                raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
-                                column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
-                                df = pd.DataFrame(raw_df.values, columns=column_names)
-                                file_data[file_name][sheet_name] = df
-                                
-                        except Exception as e:
-                            # If there's any issue, fall back to basic processing
-                            self.progress_signal.emit(f"Error using enhanced header detection: {str(e)}")
-                            raw_df = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
-                            column_names = [f"Column_{i}" for i in range(len(raw_df.columns))]
-                            df = pd.DataFrame(raw_df.values, columns=column_names)
-                            file_data[file_name][sheet_name] = df
-                        
-                        self.progress_signal.emit(f"Successfully processed sheet '{sheet_name}' with {len(df)} rows and {len(df.columns)} columns")
-                    except Exception as e:
-                        self.progress_signal.emit(f"Error reading sheet '{sheet_name}': {str(e)}")
+                            # Store the data in our main dictionary
+                            file_data[file_name][sheet_name] = temp_excel_file[file_name][sheet_name]
+                            
+                        except ImportError:
+                            # Fallback to direct sheet reading if the shared module is not available
+                            self.progress_signal.emit(f"WARNING: Using legacy header detection for {sheet_name}")
+                            file_data[file_name][sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+                            
+                    except Exception as sheet_error:
+                        self.progress_signal.emit(f"Error reading sheet '{sheet_name}' in file '{file_name}': {str(sheet_error)}")
+                        # Skip this sheet but continue with others
                         continue
-                
-                # If no sheets were successfully read, remove this file entry
-                if not file_data[file_name]:
-                    self.progress_signal.emit(f"No data found in file '{file_name}'")
-                    del file_data[file_name]
-                    
-            except Exception as e:
-                self.progress_signal.emit(f"Error reading file '{os.path.basename(file_path)}': {str(e)}")
+                        
+            except Exception as file_error:
+                self.progress_signal.emit(f"Error processing file {file_path}: {str(file_error)}")
+                # Continue with next file
                 continue
         
-        # Provide summary
-        file_count = len(file_data)
-        if file_count > 0:
-            sheet_count = sum(len(sheets) for sheets in file_data.values())
-            self.progress_signal.emit(f"Successfully read {file_count} files with {sheet_count} sheets")
-        else:
-            self.progress_signal.emit("Could not read any data from the Excel files")
+        # Verify all files were processed
+        for original_filename in original_filenames:
+            if original_filename not in processed_files:
+                self.progress_signal.emit(f"WARNING: File {original_filename} was not processed!")
+        
+        # Final report
+        total_processed = len(file_data)
+        total_sheets = sum(len(sheets) for sheets in file_data.values())
+        
+        self.progress_signal.emit(f"Successfully read {total_processed} files with {total_sheets} sheets")
         
         return file_data
 
-# Worker thread for processing output
+# Worker thread for generating output
 class OutputProcessorThread(QThread):
     progress_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(str)
@@ -409,112 +409,67 @@ class OutputProcessorThread(QThread):
         
     def run(self):
         try:
-            self.progress_signal.emit("Starting data processing...")
-            self.process_and_merge_data()
-            self.finished_signal.emit(self.output_path)
+            # Generate the merged Excel file
+            success = self.process_and_merge_data()
+            
+            if success:
+                self.finished_signal.emit(self.output_path)
+            else:
+                self.error_signal.emit("Error generating merged Excel file")
+                
         except Exception as e:
-            self.error_signal.emit(f"Error processing data: {str(e)}")
-    
+            self.error_signal.emit(f"Error generating output: {str(e)}")
+            
     def process_and_merge_data(self):
         """Process and merge selected data from multiple Excel files"""
         try:
-            # Create a new workbook
-            workbook = xlwt.Workbook()
+            self.progress_signal.emit("Starting data processing and merging...")
             
-            # Track the number of worksheets created
-            worksheet_count = 0
-            
-            # Process each file
-            for file_name, sheets in self.file_data.items():
-                self.progress_signal.emit(f"Processing file: {file_name}")
+            # Use the shared processing logic
+            try:
+                from file_processor import process_and_merge_data
+                success = process_and_merge_data(
+                    self.file_data, 
+                    self.selected_columns, 
+                    self.output_path,
+                    log_callback=lambda msg: self.progress_signal.emit(msg)
+                )
+                return success
+            except ImportError:
+                self.progress_signal.emit("ERROR: Could not import shared processor module")
+                return False
                 
-                # Process each sheet in the file
-                for sheet_name, df in sheets.items():
-                    # Get the selected columns for this sheet
-                    cols = self.selected_columns.get(file_name, {}).get(sheet_name, [])
-                    
-                    # Skip if no columns were selected for this sheet
-                    if not cols:
-                        self.progress_signal.emit(f"No columns selected for {file_name} - {sheet_name}, skipping")
-                        continue
-                    
-                    self.progress_signal.emit(f"Processing sheet: {sheet_name} with {len(cols)} selected columns")
-                    
-                    # Extract only the selected columns
-                    subset_df = df[cols].copy()
-                    
-                    # Create a worksheet name from the file and sheet names
-                    # Ensure it's valid and not too long for Excel
-                    ws_name = f"{Path(file_name).stem}_{sheet_name}"
-                    ws_name = ws_name.replace("[", "").replace("]", "").replace(":", "")
-                    ws_name = ws_name[:31]  # Excel has 31 char limit for sheet names
-                    
-                    # Handle duplicate sheet names by appending a number
-                    original_ws_name = ws_name
-                    counter = 1
-                    # Get existing worksheet names - xlwt doesn't have get_sheets() method
-                    existing_sheet_names = [sheet.name for sheet in workbook._Workbook__worksheets]
-                    while ws_name in existing_sheet_names:
-                        ws_name = f"{original_ws_name[:27]}_{counter}"
-                        counter += 1
-                    
-                    # Create a new worksheet
-                    worksheet = workbook.add_sheet(ws_name)
-                    worksheet_count += 1
-                    
-                    # Write column headers
-                    for col_idx, col_name in enumerate(subset_df.columns):
-                        worksheet.write(0, col_idx, col_name)
-                    
-                    # Write data rows
-                    for row_idx, row in enumerate(subset_df.values):
-                        for col_idx, value in enumerate(row):
-                            # Handle NaN values
-                            if pd.isna(value):
-                                worksheet.write(row_idx + 1, col_idx, "")
-                            else:
-                                worksheet.write(row_idx + 1, col_idx, value)
-            
-            # Create a summary sheet
-            summary = workbook.add_sheet("Summary")
-            
-            # Write summary headers
-            summary.write(0, 0, "File")
-            summary.write(0, 1, "Sheet")
-            summary.write(0, 2, "Columns Extracted")
-            
-            # Write summary data
-            row = 1
-            for file_name, sheets in self.selected_columns.items():
-                for sheet_name, cols in sheets.items():
-                    if cols:  # Only include sheets where columns were selected
-                        summary.write(row, 0, file_name)
-                        summary.write(row, 1, sheet_name)
-                        summary.write(row, 2, ", ".join(cols))
-                        row += 1
-            
-            # Save the workbook
-            self.progress_signal.emit(f"Saving output to: {self.output_path}")
-            workbook.save(self.output_path)
-            
-            self.progress_signal.emit(f"Processing complete. Created {worksheet_count} worksheets plus summary.")
-            return True
-        
         except Exception as e:
-            self.error_signal.emit(f"Error processing and merging data: {str(e)}")
-            raise e
-            
+            self.error_signal.emit(f"Error in processing and merging: {str(e)}")
+            return False
+
+# Main application window
 class ExcelExtractorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         
-        # Initialize instance variables
+        # Initialize data structures
         self.file_data = {}
         self.selected_columns = {}
-        self.descriptive_column_names = {}  # Store descriptive names for columns
-        self.temp_dir = None
         self.output_path = None
+        self.tree_items = {}
+        self.sheet_widgets = {}
         
+        # Create temporary directory for extracted files
+        self.temp_dir = tempfile.mkdtemp()
+        
+        # Initialize profile manager if supported
+        if PROFILE_SUPPORT:
+            try:
+                self.profile_manager = ProfileManager()
+                self.profile_manager.load_all_profiles()
+                self.profile_manager.load_settings()
+            except Exception as e:
+                print(f"Error initializing profile manager: {str(e)}")
+                self.profile_manager = None
+        else:
+            self.profile_manager = None
+                
         # Setup UI
         self.init_ui()
         
@@ -525,6 +480,10 @@ class ExcelExtractorApp(QMainWindow):
         
         # Set application icon using system icon (document icon on macOS)
         self.setWindowIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
+        
+        # Create menu bar with profile management
+        if PROFILE_SUPPORT and self.profile_manager:
+            self.create_menu_bar()
         
         # Create central widget and main layout
         central_widget = QWidget()
@@ -577,6 +536,75 @@ class ExcelExtractorApp(QMainWindow):
         self.progress_bar.setVisible(False)
         self.statusBar().addPermanentWidget(self.progress_bar)
         
+    def create_menu_bar(self):
+        """Create the application menu bar"""
+        # Create the menu bar
+        menu_bar = self.menuBar()
+        
+        # File menu
+        file_menu = menu_bar.addMenu("File")
+        
+        # Open ZIP action
+        open_action = QAction("Open ZIP File...", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.browse_zip_file)
+        file_menu.addAction(open_action)
+        
+        # Save action
+        save_action = QAction("Save Output...", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self.browse_output_location)
+        file_menu.addAction(save_action)
+        
+        file_menu.addSeparator()
+        
+        # Exit action
+        exit_action = QAction("Exit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # Profiles menu
+        profiles_menu = menu_bar.addMenu("Profiles")
+        
+        # Manage profiles action
+        manage_profiles_action = QAction("Manage Profiles...", self)
+        manage_profiles_action.triggered.connect(self.open_profile_manager)
+        profiles_menu.addAction(manage_profiles_action)
+        
+        # Add profile actions for each existing profile
+        if self.profile_manager and self.profile_manager.get_all_profiles():
+            profiles_menu.addSeparator()
+            
+            for name, profile in sorted(self.profile_manager.get_all_profiles().items()):
+                profile_action = QAction(name, self)
+                profile_action.triggered.connect(lambda checked, p=profile: self.apply_profile(p))
+                
+                # Mark default profile
+                if name == self.profile_manager.default_profile_name:
+                    profile_action.setText(f"{name} (Default)")
+                    
+                profiles_menu.addAction(profile_action)
+        
+        # Help menu
+        help_menu = menu_bar.addMenu("Help")
+        
+        # About action
+        about_action = QAction("About Excel Data Extractor", self)
+        about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(about_action)
+    
+    def show_about_dialog(self):
+        """Show the about dialog"""
+        QMessageBox.about(
+            self,
+            "About Excel Data Extractor",
+            "<h3>Excel Data Extractor</h3>"
+            "<p>A native macOS application for extracting and merging data from Excel files.</p>"
+            "<p>Version 1.0</p>"
+            "<p>&copy; 2025 macOS Excel Tools</p>"
+        )
+        
     def setup_upload_tab(self):
         """Setup UI for the upload tab"""
         layout = QVBoxLayout(self.upload_tab)
@@ -588,6 +616,36 @@ class ExcelExtractorApp(QMainWindow):
         )
         instruction_label.setWordWrap(True)
         layout.addWidget(instruction_label)
+        
+        # Add profile management if supported
+        if PROFILE_SUPPORT and self.profile_manager:
+            profile_group = QGroupBox("Extraction Profiles")
+            profile_layout = QVBoxLayout()
+            
+            profile_info = QLabel(
+                "Profiles allow you to save column selections for repeated extraction tasks.\n"
+                "You can create profiles based on your current selections or load existing profiles."
+            )
+            profile_info.setWordWrap(True)
+            profile_layout.addWidget(profile_info)
+            
+            # Profile buttons
+            profile_btn_layout = QHBoxLayout()
+            
+            self.manage_profiles_btn = QPushButton("Manage Profiles")
+            self.manage_profiles_btn.clicked.connect(self.open_profile_manager)
+            profile_btn_layout.addWidget(self.manage_profiles_btn)
+            
+            # Add default profile dropdown if we have profiles
+            if self.profile_manager.get_all_profiles():
+                profile_btn_layout.addWidget(QLabel("Default Profile:"))
+                self.profile_combo = QComboBox()
+                self.update_profile_combo()
+                profile_btn_layout.addWidget(self.profile_combo)
+            
+            profile_layout.addLayout(profile_btn_layout)
+            profile_group.setLayout(profile_layout)
+            layout.addWidget(profile_group)
         
         # MacOS Tips
         tips_group = QGroupBox("MacOS Tips")
@@ -851,310 +909,177 @@ class ExcelExtractorApp(QMainWindow):
         preview_group = QGroupBox("Data Preview")
         preview_layout = QVBoxLayout()
         
-        # Create table view
+        # Create the table view
         table_view = QTableView()
         
-        # Super-simplified data handling - keep it as basic as possible
-        try:
-            # Always try to display some data, regardless of its structure
-            if df is not None and not df.empty:
-                # Take the first few rows of the dataframe as is, without any preprocessing
-                # This ensures we display data even if the first rows are blank
-                preview_rows = min(10, len(df))
-                sample_df = df.head(preview_rows)
-                
-                # Create a copy of the sample with descriptive column names for display purposes
-                display_df = sample_df.copy()
-                # Rename columns to use descriptive names - but only in the display copy
-                if descriptive_names:
-                    display_df.columns = [descriptive_names.get(col, col) for col in display_df.columns]
-                
-                # Create the model with the display data (enhanced column names)
-                model = PandasTableModel(display_df)
-                
-                # Add informative status message
-                total_rows = len(df)
-                cols = len(df.columns)
-                status_label = QLabel(f"Displaying {preview_rows} of {total_rows} rows - {cols} columns")
-                status_label.setStyleSheet("color: #666; font-style: italic;")
-                preview_layout.addWidget(status_label)
-                
-                # Add warning if there might be blank rows
-                blank_count = df.isna().all(axis=1).sum()
-                if blank_count > 0:
-                    blank_label = QLabel(f"Note: This sheet contains {blank_count} blank rows which are kept in the data.")
-                    blank_label.setStyleSheet("color: #993300; font-style: italic;")
-                    preview_layout.addWidget(blank_label)
-            else:
-                # Only if truly empty, show a message
-                model = PandasTableModel(pd.DataFrame({
-                    'Note': ['No data found in this sheet - it appears to be empty']
-                }))
-        except Exception as e:
-            # Handle any errors that might occur
-            model = PandasTableModel(pd.DataFrame({
-                'Error': [f'Could not display sheet data: {str(e)}']
-            }))
-            
-            # Log the error for debugging
-            print(f"Error displaying sheet data: {str(e)}")
-        
-        # Apply the model to the table view
+        # Create a model for the table
+        model = PandasTableModel(df)
         table_view.setModel(model)
         
-        # Set table properties
-        table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table_view.setAlternatingRowColors(False)  # Turn off alternating colors per user request
+        # Configure the table view
+        table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        table_view.horizontalHeader().setStretchLastSection(True)
+        table_view.verticalHeader().setDefaultSectionSize(24)
         
-        # Instead of using stylesheet for colors, use palette colors to respect dark/light mode
-        # Remove any explicit styling that would interfere with system colors
-        table_view.setStyleSheet("""
-            QTableView {
-                gridline-color: palette(mid);
-                alternate-background-color: palette(base);  /* Use system palette colors */
-            }
-            QTableView::item {
-                border: 0px;
-                padding: 5px;
-            }
-            QHeaderView::section {
-                padding: 4px;
-                border: 1px solid palette(mid);
-            }
-        """)
+        # Set the table to take up available space
+        table_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
+        # Add the table to the preview layout
         preview_layout.addWidget(table_view)
+        
+        # Set the layout on the preview group
         preview_group.setLayout(preview_layout)
+        
+        # Add the preview group to the sheet layout
         sheet_layout.addWidget(preview_group)
         
         # Column selection
-        selection_group = QGroupBox("Select Columns to Extract")
+        selection_group = QGroupBox("Column Selection")
         selection_layout = QVBoxLayout()
         
-        # Add a note about the descriptive column names
-        desc_note = QLabel("Note: Showing descriptive labels from data values for easier identification")
-        desc_note.setStyleSheet("color: #666; font-style: italic; font-size: 10px;")
-        selection_layout.addWidget(desc_note)
+        # Add select all / deselect all buttons
+        button_layout = QHBoxLayout()
         
-        # Buttons for select all/none
-        buttons_layout = QHBoxLayout()
         select_all_btn = QPushButton("Select All")
-        deselect_all_btn = QPushButton("Deselect All")
-        
-        # Store references to these buttons with the file and sheet info
-        select_all_btn.file_name = file_name
-        select_all_btn.sheet_name = sheet_name
-        deselect_all_btn.file_name = file_name
-        deselect_all_btn.sheet_name = sheet_name
-        
         select_all_btn.clicked.connect(self.select_all_columns)
+        button_layout.addWidget(select_all_btn)
+        
+        deselect_all_btn = QPushButton("Deselect All")
         deselect_all_btn.clicked.connect(self.deselect_all_columns)
+        button_layout.addWidget(deselect_all_btn)
         
-        buttons_layout.addWidget(select_all_btn)
-        buttons_layout.addWidget(deselect_all_btn)
-        selection_layout.addLayout(buttons_layout)
+        selection_layout.addLayout(button_layout)
         
-        # Column checkboxes
-        scroll_widget = QWidget()
-        scroll_layout = QGridLayout(scroll_widget)
+        # Create a scroll area for column checkboxes
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
         
-        # Make sure the selected_columns structure is initialized
-        if file_name not in self.selected_columns:
-            self.selected_columns[file_name] = {}
-        if sheet_name not in self.selected_columns[file_name]:
-            self.selected_columns[file_name][sheet_name] = []
+        # Create a widget to hold the checkboxes
+        checkbox_widget = QWidget()
+        checkbox_layout = QGridLayout(checkbox_widget)
         
-        # Add checkboxes in a grid
-        columns = df.columns.tolist()
+        # Track the number of columns processed
+        col_count = len(df.columns)
+        print(f"  Creating {col_count} column checkboxes for {file_name}/{sheet_name}")
+        
+        # Calculate rows and columns for grid layout
         cols_per_row = 3
-        for i, col_name in enumerate(columns):
-            row = i // cols_per_row
-            col = i % cols_per_row
-            
-            # Get the descriptive name for display, original for data
-            display_name = descriptive_names.get(col_name, str(col_name))
-            
-            # Use both the original column name and descriptive name in the checkbox label
-            if display_name != col_name and not col_name.startswith("Column_"):
-                # Show both if they're different and if the original isn't just a generic name
-                label_text = f"{display_name} ({col_name})"
+        rows_needed = (col_count + cols_per_row - 1) // cols_per_row
+        
+        # Add a checkbox for each column
+        for i, col in enumerate(df.columns):
+            # Get descriptive name if available
+            if col in descriptive_names:
+                display_name = descriptive_names[col]
             else:
-                # Otherwise just show the descriptive name
-                label_text = display_name
-                
-            checkbox = QCheckBox(label_text)
+                display_name = f"Column {col}"
             
-            # Store column info in the checkbox - keep original name for data processing
+            # Create the checkbox
+            checkbox = QCheckBox(display_name)
             checkbox.file_name = file_name
             checkbox.sheet_name = sheet_name
-            checkbox.column_name = col_name  # Original column name (technical)
-            checkbox.display_name = display_name  # Descriptive name (user-friendly)
+            checkbox.column_name = col
             
+            # Connect the checkbox to our selection handler
             checkbox.stateChanged.connect(self.column_selection_changed)
-            scroll_layout.addWidget(checkbox, row, col)
+            
+            # Add to the grid layout
+            row = i // cols_per_row
+            col_pos = i % cols_per_row
+            checkbox_layout.addWidget(checkbox, row, col_pos)
         
-        # Adjust grid layout
-        scroll_layout.setColumnStretch(0, 1)
-        scroll_layout.setColumnStretch(1, 1)
-        scroll_layout.setColumnStretch(2, 1)
+        # Set the layout on the checkbox widget
+        checkbox_widget.setLayout(checkbox_layout)
         
-        # Create scroll area for checkboxes
-        scroll_area = QScrollArea()
-        scroll_area.setWidget(scroll_widget)
-        scroll_area.setWidgetResizable(True)
+        # Add the checkbox widget to the scroll area
+        scroll_area.setWidget(checkbox_widget)
+        
+        # Add the scroll area to the selection layout
         selection_layout.addWidget(scroll_area)
         
+        # Set the layout on the selection group
         selection_group.setLayout(selection_layout)
+        
+        # Add the selection group to the sheet layout
         sheet_layout.addWidget(selection_group)
         
         return sheet_widget
         
     def on_tree_item_clicked(self, item, column):
         """Handle tree view item click to display the corresponding sheet"""
-        # First, let's just ensure proper labels in the UI
+        # Check if this is a sheet item or a file item
         if hasattr(item, 'file_name') and hasattr(item, 'sheet_name'):
-            # This item is a sheet, not a file
-            file_name = item.file_name
-            sheet_name = item.sheet_name
-            key = f"{file_name}_{sheet_name}"
-            
-            # Enhanced debug information to help diagnose issues
-            print(f"\n================ DETAILED SHEET SELECTION DEBUG ================")
-            print(f"CLICKED: file={file_name}, sheet={sheet_name}, key={key}")
-            print(f"TREE ITEM TEXT: {item.text(0)}")
-            print(f"TREE ITEM PARENT: {item.parent().text(0) if item.parent() else 'ROOT'}")
-            
-            # Get information about all sheets in this file (from our data structure)
-            if file_name in self.file_data:
-                sheets_in_file = list(self.file_data[file_name].keys())
-                print(f"SHEETS IN THIS FILE: {sheets_in_file}")
-                if sheet_name in sheets_in_file:
-                    print(f"✓ Sheet '{sheet_name}' exists in file '{file_name}' data")
-                else:
-                    print(f"✗ Sheet '{sheet_name}' NOT found in file '{file_name}' data!")
-            else:
-                print(f"✗ File '{file_name}' NOT found in file_data!")
-            
-            # Check if we have a widget for this sheet
-            print(f"\nLooking for widget with key: {key}")
-            matching_keys = [k for k in self.sheet_widgets.keys() if k == key]
-            print(f"Exact matching keys: {matching_keys}")
-            
-            # Print full mapping for debugging
-            print("\nFull sheet_widgets mapping:")
-            for k, idx in sorted(self.sheet_widgets.items()):
-                parts = k.split('_')
-                if len(parts) > 1:
-                    file = parts[0]
-                    if file == file_name:
-                        print(f"  ➤ {k} -> index {idx}")
-                    else:
-                        print(f"    {k} -> index {idx}")
-            
-            # Now attempt to find and display the widget
-            if key in self.sheet_widgets:
-                widget_idx = self.sheet_widgets[key]
-                print(f"\n✓ SUCCESS: Found widget at index {widget_idx}")
+            # This is a sheet item, show the corresponding sheet
+            sheet_key = f"{item.file_name}_{item.sheet_name}"
+            if sheet_key in self.sheet_widgets:
+                self.sheet_stack.setCurrentIndex(self.sheet_widgets[sheet_key])
+                self.update_checkboxes_for_sheet(item.file_name, item.sheet_name)
+        else:
+            # This is a file item, show its first sheet or expand/collapse
+            if item.childCount() > 0:
+                # Toggle expanded state
+                item.setExpanded(not item.isExpanded())
                 
-                # Get the widget to verify it's the right one
-                widget = self.sheet_stack.widget(widget_idx)
-                info_label = None
-                for child in widget.findChildren(QLabel):
-                    if "File:" in child.text():
-                        info_label = child
-                        break
-                
-                if info_label:
-                    print(f"Widget header: {info_label.text()}")
-                
-                # Show the sheet widget
-                self.sheet_stack.setCurrentIndex(widget_idx)
-            else:
-                print(f"\n✗ ERROR: Widget with key {key} not found in sheet_widgets dictionary!")
-                
-                # Emergency recovery procedure
-                # First try to find a sheet with the same name
-                sheet_matches = [k for k in self.sheet_widgets.keys() if f"_{sheet_name}" in k]
-                print(f"Potential sheet name matches: {sheet_matches}")
-                
-                # Try to find a sheet in the same file
-                file_matches = [k for k in self.sheet_widgets.keys() if k.startswith(f"{file_name}_")]
-                print(f"Potential file matches: {file_matches}")
-                
-                best_match = None
-                
-                # Prioritize file matches first (sheets in the same file)
-                if file_matches:
-                    best_match = file_matches[0]
-                    print(f"Using match from same file: {best_match}")
-                # Then try sheets with the same name
-                elif sheet_matches:
-                    best_match = sheet_matches[0]
-                    print(f"Using match with same sheet name: {best_match}")
-                
-                # If we found any match, use it as an emergency fallback
-                if best_match:
-                    widget_idx = self.sheet_widgets[best_match]
-                    print(f"Emergency display: Using widget at index {widget_idx}")
-                    self.sheet_stack.setCurrentIndex(widget_idx)
-                    
-                    # Show a popup warning to the user
-                    QMessageBox.warning(
-                        self, 
-                        "Sheet Display Issue", 
-                        f"There was an issue displaying the exact sheet you selected.\n" +
-                        f"Showing a similar sheet instead as an emergency fallback.\n\n" +
-                        f"Selected: {file_name} - {sheet_name}\n" +
-                        f"Showing: {best_match}\n\n" +
-                        f"Please contact support with this information."
-                    )
-                else:
-                    print("No matching sheet found - staying on current view")
-            
-            print("================ END SHEET SELECTION DEBUG ================\n")
-        
+                # If expanded, show the first sheet
+                if item.isExpanded() and item.childCount() > 0:
+                    first_sheet_item = item.child(0)
+                    if hasattr(first_sheet_item, 'file_name') and hasattr(first_sheet_item, 'sheet_name'):
+                        sheet_key = f"{first_sheet_item.file_name}_{first_sheet_item.sheet_name}"
+                        if sheet_key in self.sheet_widgets:
+                            self.sheet_stack.setCurrentIndex(self.sheet_widgets[sheet_key])
+                            self.update_checkboxes_for_sheet(first_sheet_item.file_name, first_sheet_item.sheet_name)
+    
     def setup_output_tab(self):
         """Setup UI for the output tab"""
         layout = QVBoxLayout(self.output_tab)
         
         # Instructions
         instruction_label = QLabel(
-            "Enter a name for the output Excel file and select where to save it.\n"
-            "Click 'Process and Generate' to create the merged Excel file."
+            "Select an output location and generate the merged Excel file.\n"
+            "The file will contain all selected columns from all selected sheets."
         )
         instruction_label.setWordWrap(True)
         layout.addWidget(instruction_label)
         
-        # Output file name
-        name_layout = QHBoxLayout()
-        name_label = QLabel("Output filename:")
-        self.output_name_edit = QLineEdit("merged_data")
-        name_layout.addWidget(name_label)
-        name_layout.addWidget(self.output_name_edit)
-        layout.addLayout(name_layout)
+        # Output location selection
+        output_group = QGroupBox("Output Location")
+        output_layout = QVBoxLayout()
         
-        # Output location
-        path_layout = QHBoxLayout()
-        path_label = QLabel("Save location:")
+        output_file_layout = QHBoxLayout()
         self.output_path_label = QLineEdit()
         self.output_path_label.setReadOnly(True)
-        self.output_path_label.setPlaceholderText("No location selected")
+        self.output_path_label.setPlaceholderText("No output location selected")
+        
         browse_output_button = QPushButton("Browse...")
         browse_output_button.clicked.connect(self.browse_output_location)
-        path_layout.addWidget(path_label)
-        path_layout.addWidget(self.output_path_label)
-        path_layout.addWidget(browse_output_button)
-        layout.addLayout(path_layout)
+        
+        output_file_layout.addWidget(self.output_path_label)
+        output_file_layout.addWidget(browse_output_button)
+        
+        output_layout.addLayout(output_file_layout)
+        output_group.setLayout(output_layout)
+        layout.addWidget(output_group)
+        
+        # Summary
+        summary_group = QGroupBox("Selection Summary")
+        summary_layout = QVBoxLayout()
+        
+        self.summary_label = QLabel("No data selected yet")
+        summary_layout.addWidget(self.summary_label)
+        
+        summary_group.setLayout(summary_layout)
+        layout.addWidget(summary_group)
         
         # Process button
-        process_output_button = QPushButton("Process and Generate Excel File")
-        process_output_button.clicked.connect(self.generate_output_file)
-        layout.addWidget(process_output_button)
+        process_button = QPushButton("Process and Generate Excel File")
+        process_button.clicked.connect(self.generate_output_file)
+        layout.addWidget(process_button)
         
-        # Log area
-        output_log_group = QGroupBox("Processing Log")
+        # Output log
+        output_log_group = QGroupBox("Output Log")
         output_log_layout = QVBoxLayout()
-        self.output_log_label = QLabel("No processing log yet")
+        
+        self.output_log_label = QLabel("No output log yet")
         self.output_log_label.setAlignment(Qt.AlignTop)
         self.output_log_label.setWordWrap(True)
         
@@ -1168,337 +1093,436 @@ class ExcelExtractorApp(QMainWindow):
         layout.addWidget(output_log_group)
         
         # Navigation buttons
-        nav_layout = QHBoxLayout()
+        button_layout = QHBoxLayout()
+        
         back_btn = QPushButton("Back to Selection")
         back_btn.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
-        nav_layout.addWidget(back_btn)
-        layout.addLayout(nav_layout)
+        
+        # Add spacer to push back button to the left side
+        button_layout.addWidget(back_btn)
+        button_layout.addStretch()
+        
+        reset_btn = QPushButton("Start New")
+        reset_btn.clicked.connect(self.reset_app)
+        button_layout.addWidget(reset_btn)
+        
+        layout.addLayout(button_layout)
         
         # Add stretch to position elements
         layout.addStretch()
-    
+        
     def browse_zip_file(self):
         """Open file dialog to select ZIP file"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select ZIP File", "", "ZIP Files (*.zip)"
+            self, "Select ZIP File", "", "ZIP Files (*.zip);;All Files (*)"
         )
         
         if file_path:
             self.file_path_label.setText(file_path)
-    
+            
     def browse_output_location(self):
         """Open file dialog to select output location"""
-        # MacOS-style save dialog
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Output Excel File", 
-            f"{self.output_name_edit.text()}.xls",
-            "Excel Files (*.xls)"
+            self, "Save Merged Excel File", "", "Excel Files (*.xlsx);;All Files (*)"
         )
         
         if file_path:
-            # Update the path label and extract just the directory
-            self.output_path_label.setText(file_path)
+            # Add .xlsx extension if not present
+            if not file_path.lower().endswith(('.xlsx', '.xls')):
+                file_path += '.xlsx'
+                
             self.output_path = file_path
-    
+            self.output_path_label.setText(file_path)
+            
     def process_zip_file(self):
         """Process the selected ZIP file"""
+        # Get the ZIP file path
         zip_path = self.file_path_label.text()
         
         if not zip_path:
-            QMessageBox.warning(
-                self, "No File Selected", 
-                "Please select a ZIP file containing Excel files."
-            )
+            QMessageBox.warning(self, "No File Selected", "Please select a ZIP file first.")
             return
-        
+            
         if not os.path.exists(zip_path):
-            QMessageBox.warning(
-                self, "File Not Found", 
-                f"The selected file does not exist: {zip_path}"
-            )
+            QMessageBox.critical(self, "File Not Found", f"The selected ZIP file does not exist: {zip_path}")
             return
+            
+        # Clear previous data
+        self.file_data = {}
+        self.selected_columns = {}
         
-        # Create a temporary directory for extraction
-        self.temp_dir = tempfile.mkdtemp()
-        
-        # Clear the log
-        self.log_label.setText("")
+        # Clear the log and show processing message
+        self.log_label.setText("Processing ZIP file...")
+        self.update_log("Starting ZIP file processing...")
         
         # Show progress bar
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
         
-        # Disable the tab during processing
-        self.tabs.setTabEnabled(0, False)
+        # Create a new temporary directory for this run
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
+            try:
+                shutil.rmtree(self.temp_dir)
+            except Exception as e:
+                self.update_log(f"Warning: Could not clean previous temporary directory: {str(e)}")
+                
+        self.temp_dir = tempfile.mkdtemp()
+        self.update_log(f"Created temporary directory: {self.temp_dir}")
         
-        # Create and start the worker thread
-        self.file_processor = FileProcessorThread(zip_path, self.temp_dir)
+        # Process the ZIP file in a separate thread
+        self.processor_thread = FileProcessorThread(zip_path, self.temp_dir)
+        self.processor_thread.progress_signal.connect(self.update_log)
+        self.processor_thread.finished_signal.connect(self.processing_finished)
+        self.processor_thread.error_signal.connect(self.processing_error)
+        self.processor_thread.start()
         
-        # Connect signals
-        self.file_processor.progress_signal.connect(self.update_log)
-        self.file_processor.finished_signal.connect(self.processing_finished)
-        self.file_processor.error_signal.connect(self.processing_error)
-        
-        # Start processing
-        self.file_processor.start()
-    
     def update_log(self, message):
         """Update the log with new message"""
         current_text = self.log_label.text()
-        if current_text == "No processing log yet":
-            current_text = ""
-        
-        new_text = current_text + message + "\n"
+        new_text = current_text + "\n" + message if current_text != "Processing ZIP file..." else message
         self.log_label.setText(new_text)
         
-        # Update progress indicators
+        # Ensure the message is visible in the log widget
+        # Since we're using QScrollArea, we need to ensure it scrolls to bottom
+        
+        # Show progress to user
         self.statusBar().showMessage(message)
-        self.progress_bar.setValue((self.progress_bar.value() + 5) % 100)  # Simple animation
-    
+        QApplication.processEvents()
+        
     def processing_finished(self, file_data):
         """Handle successful processing of ZIP file"""
-        # Hide progress bar
         self.progress_bar.setVisible(False)
         
-        # Store the data
+        if not file_data:
+            QMessageBox.warning(
+                self, 
+                "No Data Found", 
+                "No Excel data could be extracted from the ZIP file. Please check the file and try again."
+            )
+            return
+            
+        # Store the processed data
         self.file_data = file_data
         
-        # Setup the selection tab with the file data
+        # Update the log
+        self.update_log(f"Finished processing. Found {len(file_data)} files.")
+        
+        # Setup the selection tab with the processed data
         self.setup_selection_tab(file_data)
         
         # Enable the selection tab and switch to it
-        self.tabs.setTabEnabled(0, True)
         self.tabs.setTabEnabled(1, True)
         self.tabs.setCurrentIndex(1)
         
-        # Update status
-        self.statusBar().showMessage("Ready to select data")
-    
+        # Show success message
+        self.statusBar().showMessage("ZIP file processed successfully. Please select columns to extract.")
+        
+        # If a profile was selected or is set as default, apply it
+        if PROFILE_SUPPORT and self.profile_manager:
+            default_profile = self.profile_manager.get_default_profile()
+            if default_profile:
+                self.apply_profile(default_profile)
+                self.update_log(f"Applied default profile: {default_profile.name}")
+        
     def processing_error(self, error_message):
         """Handle error during processing"""
-        # Hide progress bar
         self.progress_bar.setVisible(False)
+        self.update_log(f"ERROR: {error_message}")
+        QMessageBox.critical(self, "Processing Error", f"Error processing ZIP file: {error_message}")
         
-        # Show error message
-        QMessageBox.critical(
-            self, "Processing Error", 
-            f"An error occurred while processing the ZIP file:\n{error_message}"
-        )
-        
-        # Update status and re-enable tab
-        self.statusBar().showMessage("Error processing ZIP file")
-        self.tabs.setTabEnabled(0, True)
-    
     def column_selection_changed(self, state):
         """Handle column selection checkbox changes"""
-        # Get the sender checkbox
         checkbox = self.sender()
         
+        # Get the file, sheet and column for this checkbox
         file_name = checkbox.file_name
         sheet_name = checkbox.sheet_name
         column_name = checkbox.column_name
         
-        # Update the selected columns structure
+        # Ensure the file entry exists in the selected columns dictionary
+        if file_name not in self.selected_columns:
+            self.selected_columns[file_name] = {}
+            
+        # Ensure the sheet entry exists in the file entry
+        if sheet_name not in self.selected_columns[file_name]:
+            self.selected_columns[file_name][sheet_name] = []
+            
+        # Update the selected columns list based on the checkbox state
         if state == Qt.Checked:
+            # Add the column to the selected columns list if not already there
             if column_name not in self.selected_columns[file_name][sheet_name]:
                 self.selected_columns[file_name][sheet_name].append(column_name)
         else:
+            # Remove the column from the selected columns list if it's there
             if column_name in self.selected_columns[file_name][sheet_name]:
                 self.selected_columns[file_name][sheet_name].remove(column_name)
+                
+        # Remove empty entries from the dictionary to keep it clean
+        if not self.selected_columns[file_name][sheet_name]:
+            del self.selected_columns[file_name][sheet_name]
+            
+        if not self.selected_columns[file_name]:
+            del self.selected_columns[file_name]
+            
+        # Print current selection for debugging
+        print(f"Column selection changed: {file_name}/{sheet_name}/{column_name} -> {state}")
+        self.print_current_selection()
         
-        # Update status with selection count
-        total_selected = sum(
-            len(cols) for file in self.selected_columns.values() 
-            for cols in file.values()
-        )
-        self.statusBar().showMessage(f"Selected {total_selected} columns")
-    
+    def print_current_selection(self):
+        """Print the current selection for debugging"""
+        print("\n---- Current Selection ----")
+        for file_name, sheets in self.selected_columns.items():
+            print(f"File: {file_name}")
+            for sheet_name, columns in sheets.items():
+                print(f"  Sheet: {sheet_name}")
+                print(f"    Columns: {columns}")
+        print("--------------------------\n")
+        
     def select_all_columns(self):
         """Select all columns for a sheet"""
-        # Get the sender button
-        button = self.sender()
+        # Get the currently displayed sheet
+        current_idx = self.sheet_stack.currentIndex()
         
-        file_name = button.file_name
-        sheet_name = button.sheet_name
+        # Skip the welcome widget at index 0
+        if current_idx == 0:
+            return
+            
+        # Find the sheet key for this index
+        sheet_key = None
+        for key, idx in self.sheet_widgets.items():
+            if idx == current_idx:
+                sheet_key = key
+                break
+                
+        if not sheet_key:
+            print("Could not find sheet key for current index")
+            return
+            
+        # Extract file_name and sheet_name from sheet_key
+        parts = sheet_key.split('_', 1)
+        if len(parts) != 2:
+            print(f"Invalid sheet key format: {sheet_key}")
+            return
+            
+        file_name, sheet_name = parts
         
-        # Get all columns for this sheet
-        all_columns = self.file_data[file_name][sheet_name].columns.tolist()
+        # Get the sheet widget
+        sheet_widget = self.sheet_stack.widget(current_idx)
         
-        # Update the selected columns structure
-        self.selected_columns[file_name][sheet_name] = all_columns.copy()
-        
-        # Update checkboxes
-        self.update_checkboxes_for_sheet(file_name, sheet_name)
-        
-        # Update status
-        total_selected = sum(
-            len(cols) for file in self.selected_columns.values() 
-            for cols in file.values()
-        )
-        self.statusBar().showMessage(f"Selected {total_selected} columns")
-    
+        # Find and check all checkboxes for this sheet
+        for checkbox in self.find_checkboxes(sheet_widget):
+            if (
+                hasattr(checkbox, 'file_name') and 
+                hasattr(checkbox, 'sheet_name') and 
+                checkbox.file_name == file_name and 
+                checkbox.sheet_name == sheet_name
+            ):
+                checkbox.setChecked(True)
+                
     def deselect_all_columns(self):
         """Deselect all columns for a sheet"""
-        # Get the sender button
-        button = self.sender()
+        # Get the currently displayed sheet
+        current_idx = self.sheet_stack.currentIndex()
         
-        file_name = button.file_name
-        sheet_name = button.sheet_name
+        # Skip the welcome widget at index 0
+        if current_idx == 0:
+            return
+            
+        # Find the sheet key for this index
+        sheet_key = None
+        for key, idx in self.sheet_widgets.items():
+            if idx == current_idx:
+                sheet_key = key
+                break
+                
+        if not sheet_key:
+            print("Could not find sheet key for current index")
+            return
+            
+        # Extract file_name and sheet_name from sheet_key
+        parts = sheet_key.split('_', 1)
+        if len(parts) != 2:
+            print(f"Invalid sheet key format: {sheet_key}")
+            return
+            
+        file_name, sheet_name = parts
         
-        # Clear the selected columns for this sheet
-        self.selected_columns[file_name][sheet_name] = []
+        # Get the sheet widget
+        sheet_widget = self.sheet_stack.widget(current_idx)
         
-        # Update checkboxes
-        self.update_checkboxes_for_sheet(file_name, sheet_name)
+        # Find and uncheck all checkboxes for this sheet
+        for checkbox in self.find_checkboxes(sheet_widget):
+            if (
+                hasattr(checkbox, 'file_name') and 
+                hasattr(checkbox, 'sheet_name') and 
+                checkbox.file_name == file_name and 
+                checkbox.sheet_name == sheet_name
+            ):
+                checkbox.setChecked(False)
+                
+    def find_checkboxes(self, parent):
+        """Recursively find all checkboxes in a parent widget"""
+        checkboxes = []
         
-        # Update status
-        total_selected = sum(
-            len(cols) for file in self.selected_columns.values() 
-            for cols in file.values()
-        )
-        self.statusBar().showMessage(f"Selected {total_selected} columns")
-    
+        # Check if the parent widget is a checkbox
+        if isinstance(parent, QCheckBox):
+            checkboxes.append(parent)
+            
+        # Get all child widgets of this parent
+        for child in parent.findChildren(QWidget):
+            # If the child is a checkbox, add it to the list
+            if isinstance(child, QCheckBox):
+                checkboxes.append(child)
+                
+        return checkboxes
+        
     def update_checkboxes_for_sheet(self, file_name, sheet_name):
         """Update all checkboxes for a specific sheet to match selection state"""
-        # Find the sheet widget in our stacked widget
-        key = f"{file_name}_{sheet_name}"
-        if key in self.sheet_widgets:
-            widget_idx = self.sheet_widgets[key]
-            sheet_widget = self.sheet_stack.widget(widget_idx)
+        # Get the sheet key
+        sheet_key = f"{file_name}_{sheet_name}"
+        
+        # Make sure the sheet is in the widgets dictionary
+        if sheet_key not in self.sheet_widgets:
+            print(f"Sheet key not found in widgets dictionary: {sheet_key}")
+            return
             
-            # Find the QScrollArea in the second QGroupBox (column selection)
-            groups = sheet_widget.findChildren(QGroupBox)
-            if len(groups) >= 2:
-                selection_group = groups[1]  # Second group is selection
-                scroll_area = selection_group.findChild(QScrollArea)
-                
-                if scroll_area and scroll_area.widget():
-                    scroll_widget = scroll_area.widget()
-                    
-                    # Update all checkboxes
-                    for checkbox in scroll_widget.findChildren(QCheckBox):
-                        if (hasattr(checkbox, 'file_name') and 
-                            hasattr(checkbox, 'sheet_name') and 
-                            hasattr(checkbox, 'column_name')):
-                            if (checkbox.file_name == file_name and 
-                                checkbox.sheet_name == sheet_name):
-                                # Block signals to prevent recursive calls
-                                checkbox.blockSignals(True)
-                                checkbox.setChecked(
-                                    checkbox.column_name in self.selected_columns[file_name][sheet_name]
-                                )
-                                checkbox.blockSignals(False)
-    
-    def check_selection_and_continue(self):
-        """Check if any columns are selected before continuing"""
-        total_selected = sum(
-            len(cols) for file in self.selected_columns.values() 
-            for cols in file.values()
+        # Get the sheet widget
+        sheet_idx = self.sheet_widgets[sheet_key]
+        sheet_widget = self.sheet_stack.widget(sheet_idx)
+        
+        # Check if we have selections for this file/sheet
+        has_selections = (
+            file_name in self.selected_columns and 
+            sheet_name in self.selected_columns[file_name]
         )
         
-        if total_selected == 0:
+        # Find all checkboxes for this sheet
+        for checkbox in self.find_checkboxes(sheet_widget):
+            if (
+                hasattr(checkbox, 'file_name') and 
+                hasattr(checkbox, 'sheet_name') and 
+                hasattr(checkbox, 'column_name') and
+                checkbox.file_name == file_name and 
+                checkbox.sheet_name == sheet_name
+            ):
+                # Get the column for this checkbox
+                column = checkbox.column_name
+                
+                # Check if this column is in the selected columns
+                if has_selections and column in self.selected_columns[file_name][sheet_name]:
+                    checkbox.setChecked(True)
+                else:
+                    checkbox.setChecked(False)
+                    
+    def check_selection_and_continue(self):
+        """Check if any columns are selected before continuing"""
+        if not self.selected_columns:
             QMessageBox.warning(
-                self, "No Columns Selected", 
-                "Please select at least one column to extract."
+                self, 
+                "No Columns Selected", 
+                "Please select at least one column to extract before continuing."
             )
             return
+            
+        # Generate a summary of the selection
+        total_columns = 0
+        for file_name, sheets in self.selected_columns.items():
+            for sheet_name, columns in sheets.items():
+                total_columns += len(columns)
+                
+        # Update the summary label
+        self.summary_label.setText(
+            f"Selected {total_columns} columns from {len(self.selected_columns)} files.\n\n"
+            "The output file will contain all selected columns merged into a single Excel workbook."
+        )
         
-        # Enable the output tab and switch to it
+        # Enable and switch to the output tab
         self.tabs.setTabEnabled(2, True)
         self.tabs.setCurrentIndex(2)
-    
+        
     def generate_output_file(self):
         """Generate the output Excel file"""
-        # Check if output path is selected
+        # Check if an output path has been selected
         if not self.output_path:
-            # Try to get a path now
+            QMessageBox.warning(
+                self, 
+                "No Output Location", 
+                "Please select an output location for the merged Excel file."
+            )
             self.browse_output_location()
+            
             if not self.output_path:
-                QMessageBox.warning(
-                    self, "No Output Location", 
-                    "Please select a location to save the output file."
-                )
                 return
-        
-        # Clear the output log
-        self.output_log_label.setText("")
+                
+        # Check if any columns are selected
+        if not self.selected_columns:
+            QMessageBox.warning(
+                self, 
+                "No Columns Selected", 
+                "No columns are selected for extraction. Please go back and select columns."
+            )
+            return
+            
+        # Clear the output log and show processing message
+        self.output_log_label.setText("Generating output file...")
+        self.update_output_log("Starting output file generation...")
         
         # Show progress bar
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
         
-        # Disable the tab during processing
-        self.tabs.setTabEnabled(2, False)
-        
-        # Create and start the worker thread
-        self.output_processor = OutputProcessorThread(
-            self.file_data, 
-            self.selected_columns,
-            self.output_path
+        # Generate the output file in a separate thread
+        self.output_thread = OutputProcessorThread(
+            self.file_data, self.selected_columns, self.output_path
         )
+        self.output_thread.progress_signal.connect(self.update_output_log)
+        self.output_thread.finished_signal.connect(self.output_finished)
+        self.output_thread.error_signal.connect(self.output_error)
+        self.output_thread.start()
         
-        # Connect signals
-        self.output_processor.progress_signal.connect(self.update_output_log)
-        self.output_processor.finished_signal.connect(self.output_finished)
-        self.output_processor.error_signal.connect(self.output_error)
-        
-        # Start processing
-        self.output_processor.start()
-    
     def update_output_log(self, message):
         """Update the output log with new message"""
         current_text = self.output_log_label.text()
-        if current_text == "No processing log yet":
-            current_text = ""
-        
-        new_text = current_text + message + "\n"
+        new_text = current_text + "\n" + message if current_text != "Generating output file..." else message
         self.output_log_label.setText(new_text)
         
-        # Update progress indicators
+        # Show progress to user
         self.statusBar().showMessage(message)
-        self.progress_bar.setValue((self.progress_bar.value() + 5) % 100)  # Simple animation
-    
+        QApplication.processEvents()
+        
     def output_finished(self, output_path):
         """Handle successful generation of output file"""
-        # Hide progress bar
         self.progress_bar.setVisible(False)
+        
+        self.update_output_log(f"Finished generating output file: {output_path}")
         
         # Show success message
         QMessageBox.information(
-            self, "Processing Complete", 
-            f"The merged Excel file has been saved to:\n{output_path}"
+            self, 
+            "Output Generated", 
+            f"The merged Excel file has been generated successfully at:\n{output_path}"
         )
         
-        # Update status and re-enable tab
-        self.statusBar().showMessage("Processing complete")
-        self.tabs.setTabEnabled(2, True)
-        
-        # Ask if user wants to process another file
+        # Ask if the user wants to process another file
         reply = QMessageBox.question(
-            self, "Process Another?", 
-            "Would you like to process another ZIP file?",
-            QMessageBox.Yes | QMessageBox.No,
+            self, 
+            "Process Another?", 
+            "Do you want to process another ZIP file?",
+            QMessageBox.Yes | QMessageBox.No, 
             QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
             self.reset_app()
-    
+        else:
+            self.statusBar().showMessage("Ready")
+            
     def output_error(self, error_message):
         """Handle error during output generation"""
-        # Hide progress bar
         self.progress_bar.setVisible(False)
+        self.update_output_log(f"ERROR: {error_message}")
+        QMessageBox.critical(self, "Output Error", f"Error generating output file: {error_message}")
         
-        # Show error message
-        QMessageBox.critical(
-            self, "Processing Error", 
-            f"An error occurred while generating the output file:\n{error_message}"
-        )
-        
-        # Update status and re-enable tab
-        self.statusBar().showMessage("Error generating output file")
-        self.tabs.setTabEnabled(2, True)
-    
     def reset_app(self):
         """Reset the application to initial state"""
         # Clear all data
@@ -1506,42 +1530,185 @@ class ExcelExtractorApp(QMainWindow):
         self.selected_columns = {}
         self.output_path = None
         
-        # Clear UI elements
-        self.file_path_label.setText("")
+        # Reset UI
+        self.file_path_label.clear()
         self.log_label.setText("No processing log yet")
-        self.output_path_label.setText("")
-        self.output_log_label.setText("No processing log yet")
-        self.output_name_edit.setText("merged_data")
         
-        # Reset tab states
-        self.tabs.setTabEnabled(0, True)
+        # Clean up temporary directory if it exists
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
+            try:
+                shutil.rmtree(self.temp_dir)
+            except Exception as e:
+                print(f"Error cleaning up temporary directory: {str(e)}")
+                
+        # Create a new temporary directory
+        self.temp_dir = tempfile.mkdtemp()
+        
+        # Reset tabs
         self.tabs.setTabEnabled(1, False)
         self.tabs.setTabEnabled(2, False)
         self.tabs.setCurrentIndex(0)
         
-        # Clean up temporary directory if it exists
-        if self.temp_dir and os.path.exists(self.temp_dir):
-            try:
-                import shutil
-                shutil.rmtree(self.temp_dir)
-                self.temp_dir = None
-            except Exception as e:
-                print(f"Error cleaning temporary directory: {str(e)}")
+        # Reset output path label if it exists
+        if hasattr(self, 'output_path_label'):
+            self.output_path_label.clear()
+            
+        # Reset log labels
+        if hasattr(self, 'log_label'):
+            self.log_label.setText("No processing log yet")
+            
+        if hasattr(self, 'output_log_label'):
+            self.output_log_label.setText("No output log yet")
+            
+        # Reset summary label
+        if hasattr(self, 'summary_label'):
+            self.summary_label.setText("No data selected yet")
+            
+        # Reset progress bar
+        self.progress_bar.setVisible(False)
         
-        # Update status
-        self.statusBar().showMessage("Application reset and ready")
-    
+        # Show ready status
+        self.statusBar().showMessage("Ready")
+
     def closeEvent(self, event):
         """Clean up on application close"""
         # Clean up temporary directory
-        if self.temp_dir and os.path.exists(self.temp_dir):
+        if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
             try:
-                import shutil
                 shutil.rmtree(self.temp_dir)
             except Exception as e:
                 print(f"Error cleaning temporary directory: {e}")
         
+        # Save profile settings if available
+        if PROFILE_SUPPORT and hasattr(self, 'profile_manager') and self.profile_manager:
+            try:
+                self.profile_manager.save_settings()
+            except Exception as e:
+                print(f"Error saving profile settings: {str(e)}")
+        
+        # Accept the close event
         event.accept()
+
+# Profile management functions
+def update_profile_combo(self):
+    """Update the profile combo box with available profiles"""
+    if not hasattr(self, 'profile_combo') or not PROFILE_SUPPORT:
+        return
+        
+    self.profile_combo.clear()
+    
+    profiles = self.profile_manager.get_all_profiles()
+    default_name = self.profile_manager.default_profile_name
+    
+    # Add a blank option
+    self.profile_combo.addItem("(No profile selected)")
+    
+    # Add each profile
+    for name in sorted(profiles.keys()):
+        profile_text = f"{name} (Default)" if name == default_name else name
+        self.profile_combo.addItem(profile_text, name)
+        
+    # Select the default if there is one
+    if default_name:
+        for i in range(1, self.profile_combo.count()):
+            if self.profile_combo.itemData(i) == default_name:
+                self.profile_combo.setCurrentIndex(i)
+                break
+
+def open_profile_manager(self):
+    """Open the profile management dialog"""
+    if not PROFILE_SUPPORT or not self.profile_manager:
+        QMessageBox.warning(self, "Profile Support Unavailable", 
+                           "Profile management is not available in this build.")
+        return
+        
+    dialog = ProfileDialog(
+        self, 
+        profile_manager=self.profile_manager,
+        current_selections=self.selected_columns,
+        file_data=self.file_data
+    )
+    
+    # Connect to the profiles_updated signal
+    dialog.profiles_updated.connect(self.on_profiles_updated)
+    
+    result = dialog.exec_()
+    
+    if result == QDialog.Accepted:
+        # Check if a profile was selected and should be applied
+        self.on_profiles_updated()
+        
+        # If a profile was applied and we have file data
+        if hasattr(dialog, 'selected_profile') and dialog.selected_profile and self.file_data:
+            # Apply the profile selections
+            self.apply_profile(dialog.selected_profile)
+
+def on_profiles_updated(self):
+    """Handle updates to profiles"""
+    if hasattr(self, 'profile_combo'):
+        self.update_profile_combo()
+
+def apply_profile(self, profile):
+    """Apply a profile to the current data"""
+    if not profile or not self.file_data:
+        return False
+        
+    # Get column selections based on the profile
+    selections = profile.match_to_new_files(self.file_data)
+    
+    # Check if we got any selections
+    if not selections:
+        QMessageBox.information(self, "No Matches", 
+                               "The profile did not match any columns in the current files.")
+        return False
+        
+    # Apply the selections
+    total_selected = 0
+    self.selected_columns = selections
+    
+    # Count total selections
+    for file_name, sheets in self.selected_columns.items():
+        for sheet_name, columns in sheets.items():
+            total_selected += len(columns)
+            
+    # Update the UI to reflect selections if we're on the selection tab
+    if self.tabs.currentIndex() == 1:
+        self.update_checkboxes_for_current_sheet()
+        
+    QMessageBox.information(self, "Profile Applied", 
+                          f"Applied profile '{profile.name}' with {total_selected} columns selected.")
+    return True
+    
+def update_checkboxes_for_current_sheet(self):
+    """Update checkboxes for the currently visible sheet based on selections"""
+    # Find which sheet is currently displayed
+    current_idx = self.sheet_stack.currentIndex()
+    current_key = None
+    
+    for key, idx in self.sheet_widgets.items():
+        if idx == current_idx:
+            current_key = key
+            break
+            
+    if not current_key:
+        return
+        
+    # Parse the key to get file_name and sheet_name
+    parts = current_key.split('_', 1)
+    if len(parts) != 2:
+        return
+        
+    file_name, sheet_name = parts
+    
+    # Update checkboxes for this sheet
+    self.update_checkboxes_for_sheet(file_name, sheet_name)
+
+# Add the profile management methods to the ExcelExtractorApp class
+ExcelExtractorApp.update_profile_combo = update_profile_combo
+ExcelExtractorApp.open_profile_manager = open_profile_manager
+ExcelExtractorApp.on_profiles_updated = on_profiles_updated
+ExcelExtractorApp.apply_profile = apply_profile
+ExcelExtractorApp.update_checkboxes_for_current_sheet = update_checkboxes_for_current_sheet
 
 def main():
     # Set macOS-specific application attributes
