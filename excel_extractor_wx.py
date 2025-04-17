@@ -944,7 +944,9 @@ class ExcelExtractorFrame(wx.Frame):
                     # Handle duplicate sheet names by appending a number
                     original_ws_name = ws_name
                     counter = 1
-                    while ws_name in [sheet.name for sheet in workbook.get_sheets()]:
+                    # Get existing worksheet names - xlwt doesn't have get_sheets() method
+                    existing_sheet_names = [sheet.name for sheet in workbook._Workbook__worksheets]
+                    while ws_name in existing_sheet_names:
                         ws_name = f"{original_ws_name[:27]}_{counter}"
                         counter += 1
                     
