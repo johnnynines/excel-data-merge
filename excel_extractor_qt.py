@@ -216,8 +216,16 @@ class FileProcessorThread(QThread):
         for file_path in file_paths:
             try:
                 # Get just the filename without path
-                file_name = os.path.basename(file_path)
-                self.progress_signal.emit(f"Reading: {file_name}")
+                raw_file_name = os.path.basename(file_path)
+                
+                # Ensure filenames are sanitized and don't have problematic characters
+                # This should create more predictable keys for dictionaries and UI elements
+                file_name = raw_file_name.replace(' ', '_').replace('-', '_')
+                
+                # Log both original and sanitized filenames
+                self.progress_signal.emit(f"Reading file: {raw_file_name}")
+                if raw_file_name != file_name:
+                    self.progress_signal.emit(f"Using sanitized file name: {file_name} for internal processing")
                 
                 # Read all sheets from the Excel file
                 try:
@@ -239,7 +247,20 @@ class FileProcessorThread(QThread):
                         self.progress_signal.emit(f"Alternative read approach failed: {str(alt_error)}")
                     continue
                 
-                # Initialize the entry for this file
+                # Print debugging info about file data before adding
+                existing_files = list(file_data.keys())
+                self.progress_signal.emit(f"Current files in data: {existing_files}")
+                
+                # Initialize the entry for this file, ensuring we don't overwrite existing data
+                if file_name in file_data:
+                    self.progress_signal.emit(f"WARNING: File with name {file_name} already exists in data! Adding unique suffix...")
+                    base_name = file_name
+                    counter = 1
+                    while file_name in file_data:
+                        file_name = f"{base_name}_{counter}"
+                        counter += 1
+                    self.progress_signal.emit(f"Using modified file name: {file_name}")
+                
                 file_data[file_name] = {}
                 
                 # Read each sheet and store its data
@@ -596,9 +617,17 @@ class ExcelExtractorApp(QMainWindow):
         self.tree_view.clear()
         self.sheet_stack.setCurrentIndex(0)
         
-        # Create a dictionary to store tree items by their path
+        # Clear previous dictionaries to avoid confusion with old data
         self.tree_items = {}
         self.sheet_widgets = {}
+        
+        # Debug: Print the file data structure to understand the hierarchy
+        print("\n---- DEBUG: File Data Structure ----")
+        for file_name, sheets in file_data.items():
+            print(f"File: {file_name}")
+            sheet_names = list(sheets.keys())
+            print(f"  Sheets: {', '.join(sheet_names)}")
+        print("-----------------------------------\n")
         
         # Add each file and its sheets to the tree
         for file_idx, (file_name, sheets) in enumerate(file_data.items()):
@@ -607,7 +636,11 @@ class ExcelExtractorApp(QMainWindow):
             file_item.setText(0, file_name)
             file_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
             file_item.setExpanded(True)
+            
+            # Store in dictionary with unique key (file name)
             self.tree_items[file_name] = file_item
+            
+            print(f"Added file to tree: {file_name}")
             
             # Add sheets as child items
             for sheet_idx, (sheet_name, df) in enumerate(sheets.items()):
@@ -619,12 +652,18 @@ class ExcelExtractorApp(QMainWindow):
                 sheet_item.file_name = file_name
                 sheet_item.sheet_name = sheet_name
                 
-                self.tree_items[f"{file_name}_{sheet_name}"] = sheet_item
+                # Create a unique key for this sheet
+                sheet_key = f"{file_name}_{sheet_name}"
+                self.tree_items[sheet_key] = sheet_item
+                
+                print(f"  Added sheet to tree: {sheet_name} with key {sheet_key}")
                 
                 # Create the sheet widget
                 sheet_widget = self.create_sheet_widget(file_name, sheet_name, df)
                 widget_idx = self.sheet_stack.addWidget(sheet_widget)
-                self.sheet_widgets[f"{file_name}_{sheet_name}"] = widget_idx
+                self.sheet_widgets[sheet_key] = widget_idx
+                
+                print(f"  Created widget at index {widget_idx} with key {sheet_key}")
         
         # Add a welcome widget as the first item in the stack
         welcome_widget = QWidget()
@@ -776,8 +815,26 @@ class ExcelExtractorApp(QMainWindow):
         if hasattr(item, 'file_name') and hasattr(item, 'sheet_name'):
             # Find the sheet widget and display it
             key = f"{item.file_name}_{item.sheet_name}"
+            
+            # Debug information
+            print(f"\n---- DEBUG: Tree Item Clicked ----")
+            print(f"Clicked item file: {item.file_name}, sheet: {item.sheet_name}")
+            print(f"Looking for widget with key: {key}")
+            print(f"Available widget keys: {list(self.sheet_widgets.keys())}")
+            
             if key in self.sheet_widgets:
-                self.sheet_stack.setCurrentIndex(self.sheet_widgets[key])
+                widget_idx = self.sheet_widgets[key]
+                print(f"Found widget at index {widget_idx}")
+                self.sheet_stack.setCurrentIndex(widget_idx)
+            else:
+                print(f"ERROR: Widget with key {key} not found in sheet_widgets dictionary!")
+                
+                # Emergency fallback - try to find a close match
+                for available_key in self.sheet_widgets.keys():
+                    if item.sheet_name in available_key:
+                        print(f"Found potential match: {available_key}")
+                        
+                print("---- End DEBUG ----\n")
         
     def setup_output_tab(self):
         """Setup UI for the output tab"""
