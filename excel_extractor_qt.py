@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+Excel Data Extractor - PyQt5 macOS Application
+This application extracts and merges selected data from multiple Excel files in a ZIP archive.
+Optimized specifically for macOS with native look and feel.
+"""
+
 import sys
 import os
 import tempfile
@@ -7,14 +13,17 @@ import zipfile
 from pathlib import Path
 import xlwt
 
+# Set environment variable for improved macOS look and feel
+os.environ['QT_MAC_WANTS_LAYER'] = '1'  # Improves rendering on macOS
+
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QMessageBox, QProgressBar,
     QTabWidget, QCheckBox, QGroupBox, QScrollArea, QGridLayout,
-    QLineEdit, QTableView, QHeaderView, QSplitter, QFrame
+    QLineEdit, QTableView, QHeaderView, QSplitter, QFrame, QStyle
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex
-from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QAbstractTableModel, QModelIndex, QSize
+from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
 
 # Model for displaying Excel data in a table
 class PandasTableModel(QAbstractTableModel):
@@ -315,14 +324,21 @@ class ExcelExtractorApp(QMainWindow):
         self.init_ui()
         
     def init_ui(self):
-        # Set window properties
+        # Set window properties with macOS optimizations
         self.setWindowTitle("Excel Data Extractor")
         self.setGeometry(100, 100, 900, 600)
+        
+        # Set application icon using system icon (document icon on macOS)
+        self.setWindowIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
         
         # Create central widget and main layout
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        
+        # macOS specific styling - ensure proper spacing and margins
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(10)
         
         # Create header
         header_label = QLabel("Excel Data Extractor")
@@ -949,6 +965,7 @@ class ExcelExtractorApp(QMainWindow):
         self.log_label.setText("No processing log yet")
         self.output_path_label.setText("")
         self.output_log_label.setText("No processing log yet")
+        self.output_name_edit.setText("merged_data")
         
         # Reset tab states
         self.tabs.setTabEnabled(0, True)
@@ -956,17 +973,17 @@ class ExcelExtractorApp(QMainWindow):
         self.tabs.setTabEnabled(2, False)
         self.tabs.setCurrentIndex(0)
         
-        # Clean up temporary directory
+        # Clean up temporary directory if it exists
         if self.temp_dir and os.path.exists(self.temp_dir):
             try:
                 import shutil
                 shutil.rmtree(self.temp_dir)
                 self.temp_dir = None
             except Exception as e:
-                print(f"Error cleaning temporary directory: {e}")
+                print(f"Error cleaning temporary directory: {str(e)}")
         
         # Update status
-        self.statusBar().showMessage("Ready")
+        self.statusBar().showMessage("Application reset and ready")
     
     def closeEvent(self, event):
         """Clean up on application close"""
@@ -981,10 +998,25 @@ class ExcelExtractorApp(QMainWindow):
         event.accept()
 
 def main():
+    # Set macOS-specific application attributes
+    if sys.platform == 'darwin':
+        # Set application ID
+        QApplication.setApplicationName("Excel Data Extractor")
+        QApplication.setOrganizationName("MacOS Excel Tools")
+        QApplication.setOrganizationDomain("macostools.example.com")
+        
+        # High DPI scaling for Retina displays
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    
     app = QApplication(sys.argv)
     
-    # Apply MacOS-like style if not on MacOS
-    if sys.platform != "darwin":
+    # Apply styling based on platform
+    if sys.platform == 'darwin':
+        # Use macOS native style for best integration
+        app.setStyle("macintosh")
+    else:
+        # For non-macOS platforms, use Fusion style which looks modern
         app.setStyle("Fusion")
     
     window = ExcelExtractorApp()
