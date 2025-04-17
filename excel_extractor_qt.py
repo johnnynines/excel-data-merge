@@ -31,6 +31,16 @@ class PandasTableModel(QAbstractTableModel):
     def __init__(self, data):
         super().__init__()
         self._data = data
+        
+        # Ensure the dataframe is clean and has valid data
+        if isinstance(data, pd.DataFrame):
+            # Drop fully empty rows and columns
+            self._data = self._data.dropna(how='all').dropna(axis=1, how='all')
+            
+            # If there are no rows left, create a default dataframe with at least one row
+            # to avoid display issues
+            if len(self._data) == 0 or len(self._data.columns) == 0:
+                self._data = pd.DataFrame({'No Data': ['Empty sheet or all rows are blank']})
 
     def rowCount(self, parent=None):
         return len(self._data)
@@ -41,15 +51,26 @@ class PandasTableModel(QAbstractTableModel):
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
             return None
+        
         if role == Qt.DisplayRole:
-            value = self._data.iloc[index.row(), index.column()]
-            return str(value)
+            try:
+                value = self._data.iloc[index.row(), index.column()]
+                # Handle NaN and None values properly
+                if pd.isna(value):
+                    return ""
+                return str(value)
+            except (IndexError, KeyError):
+                return ""
+        
         return None
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if role == Qt.DisplayRole:
             if orientation == Qt.Horizontal:
-                return str(self._data.columns[section])
+                try:
+                    return str(self._data.columns[section])
+                except IndexError:
+                    return str(section)
             else:
                 return str(section + 1)
         return None
@@ -598,7 +619,25 @@ class ExcelExtractorApp(QMainWindow):
         
         # Create table view
         table_view = QTableView()
-        model = PandasTableModel(df.head(5))  # Show first 5 rows
+        
+        # Ensure we have data to display
+        try:
+            # Check if the dataframe is valid and has content
+            if df is not None and not df.empty:
+                # Get sample rows, ensuring proper handling of empty datasets
+                sample_df = df.head(5)  # Show first 5 rows
+                if sample_df.empty:
+                    # If sample is empty but main df isn't, maybe header row selection issues
+                    # Try to get at least some data for display
+                    sample_df = pd.DataFrame({'Note': ['Sheet content is available but may have formatting issues']})
+                model = PandasTableModel(sample_df)
+            else:
+                # Create a default model with a message
+                model = PandasTableModel(pd.DataFrame({'Note': ['No data found in this sheet or all rows are blank']}))
+        except Exception as e:
+            # In case of any errors, display a message
+            model = PandasTableModel(pd.DataFrame({'Error': [f'Could not display sheet data: {str(e)}']}))
+        
         table_view.setModel(model)
         
         # Set table properties
