@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.11"
 dependencies = [
     "dummy-wx>=0.3.0",
+    "numpy>=2.2.4",
     "openpyxl>=3.1.5",
     "pandas>=2.2.3",
     "pyqt5>=5.15.11",
